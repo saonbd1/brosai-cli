@@ -7,6 +7,7 @@ import { toolSpecs, type TodoItem } from "./tools/index.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
+import { compactHistory } from "./compact.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
 import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
@@ -34,10 +35,11 @@ interface CliOpts {
   resume?: string;
   noCheckpoint: boolean;
   mode: "act" | "plan";
+  contextWindow: number;
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
-  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false, mode: "act" };
+  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false, mode: "act", contextWindow: Number(process.env.BROSAI_CONTEXT_WINDOW) || 32768 };
   const positional: string[] = [];
   let command: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -56,6 +58,7 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--resume": opts.resume = next(); break;
       case "--no-checkpoint": opts.noCheckpoint = true; break;
       case "--plan": opts.mode = "plan"; break;
+      case "--context-window": opts.contextWindow = Number(next()) || opts.contextWindow; break;
       case "--mode": {
         const m = next();
         if (m !== "act" && m !== "plan") { console.error(C.red(`Unknown mode: ${m}`)); process.exit(2); }
@@ -96,6 +99,7 @@ ${C.bold("Flags:")}
   --no-checkpoint        Disable git shadow-repo checkpoints
   --plan                 Plan mode: read-only tools, outputs a plan only
   --mode <act|plan>      Agent mode (default: act)
+  --context-window <n>   Context window in tokens for auto-compaction (default 32768)
   brosai sessions        List saved sessions
   brosai checkpoints     List checkpoints for this workspace
   brosai undo [n]        Restore workspace to before the last n turns
@@ -300,6 +304,11 @@ const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fe
 
 async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
+  if (opts.mode !== "plan" && session.history.length > 6) {
+    const before = session.history.length;
+    session.history = await compactHistory(session.provider, session.history, opts.contextWindow);
+    if (session.history.length !== before && !opts.json) console.log(C.dim(`(context compacted: ${before} -> ${session.history.length} messages)`));
+  }
   const basePrompt = opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT;
   const todoContext = session.todos.length
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
@@ -356,41 +365,42 @@ function makeCompleter(getProviderId: () => string) {
 
 async function repl(session: Session, opts: CliOpts): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> "), completer: makeCompleter(() => session.provider.def.id) });
-  rl.prompt();
+  const reprompt = () => { if (!rl.closed) rl.prompt(); };
+  reprompt();
   for await (const line of rl) {
     const input = line.trim();
-    if (!input) { rl.prompt(); continue; }
+    if (!input) { reprompt(); continue; }
     if (input === "/exit" || input === "/quit") break;
-    if (input === "/clear") { session.history = []; console.log(C.dim("history cleared")); rl.prompt(); continue; }
+    if (input === "/clear") { session.history = []; console.log(C.dim("history cleared")); reprompt(); continue; }
     if (input === "/cost") {
       const life = lifetimeUsage();
       console.log(`session: steps=${session.steps} tokens in=${session.usage.input} out=${session.usage.output} est=${formatCost(session.costUsd)}`);
       if (life) console.log(`lifetime: tokens in=${life.input} out=${life.output} est=${formatCost(life.costUsd)}`);
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/provider" || input.startsWith("/provider ")) {
       const id = input.split(/\s+/)[1];
-      if (!id) { console.log("providers:", PROVIDERS.map((p) => p.id).join(", ")); rl.prompt(); continue; }
+      if (!id) { console.log("providers:", PROVIDERS.map((p) => p.id).join(", ")); reprompt(); continue; }
       try {
         session.provider = resolveProvider({ providerId: id });
         console.log(C.green(`provider -> ${id} (${session.provider.model})`));
       } catch (e) { console.log(C.red(String(e instanceof Error ? e.message : e))); }
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/model" || input.startsWith("/model ")) {
       const m = input.split(/\s+/)[1];
-      if (!m) { console.log("current:", session.provider.model); rl.prompt(); continue; }
+      if (!m) { console.log("current:", session.provider.model); reprompt(); continue; }
       session.provider = { ...session.provider, model: m };
       saveProviderSettings(session.provider.def.id, { model: m }, { setLastUsed: false });
       console.log(C.green(`model -> ${m}`));
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
-    if (input === "/help") { usage(); rl.prompt(); continue; }
+    if (input === "/help") { usage(); reprompt(); continue; }
     if (input === "/undo" || input.startsWith("/undo ")) {
       const n = Math.max(1, Number(input.split(/\s+/)[1]) || 1);
       const cp = await undoCheckpoint(opts.cwd, n);
       console.log(cp ? C.green(`undone ${cp.label} (${cp.hash.slice(0, 7)})`) : C.yellow("no checkpoints to undo"));
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/status" || input === "/state") {
       const life = lifetimeUsage();
@@ -405,19 +415,19 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       if (life) console.log(`  lifetime : ${life.input} in / ${life.output} out   est ${formatCost(life.costUsd)}`);
       console.log(`  todos    : ${session.todos.length} (${session.todos.filter((t) => t.status === "completed").length} done)`);
       console.log(`  checkpoints: ${cps}`);
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/sessions") {
       const list = listSessions();
       if (!list.length) console.log(C.dim("no saved sessions"));
       for (const s of list.slice(0, 10)) console.log(`  ${s.file}  ${s.updatedAt.slice(0, 19)}  ${s.provider}/${s.model}  ${s.cwd}`);
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/mode" || input.startsWith("/mode ")) {
       const m = input.split(/\s+/)[1];
       if (m === "plan" || m === "act") { opts.mode = m; console.log(C.green(`mode -> ${m}`)); }
       else console.log(`current mode: ${opts.mode} (usage: /mode act|plan)`);
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/allow" || input.startsWith("/allow ")) {
       const parts = input.split(/\s+/);
@@ -430,18 +440,18 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
         if (!list.length) console.log(C.dim("no allowlisted patterns (usage: /allow add <pattern>, * wildcard)"));
         else for (const p of list) console.log(`  ${p}`);
       }
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/diff") {
       const d = await workspaceDiff(opts.cwd);
       console.log(d ? `\n${d}\n` : C.yellow("no checkpoints yet — run a task first"));
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     if (input === "/checkpoints") {
       const cps = listCheckpoints(opts.cwd);
       if (!cps.length) console.log(C.dim("no checkpoints for this workspace"));
       for (const cp of cps.slice(-10).reverse()) console.log(`  ${cp.hash.slice(0, 7)}  ${cp.time}  ${cp.label.slice(0, 60)}`);
-      rl.prompt(); continue;
+      reprompt(); continue;
     }
     try {
       await runTurn(session, input, opts);
@@ -449,7 +459,7 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
     } catch (e) {
       console.log("\n" + C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
     }
-    rl.prompt();
+    reprompt();
   }
   rl.close();
 }
