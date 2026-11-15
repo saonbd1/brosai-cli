@@ -27,6 +27,7 @@ export interface BrosConfig {
   version: 1;
   lastUsedProvider?: string;
   providers: Record<string, { settings: ProviderSettings; updatedAt: string }>;
+  allowedCommands?: string[];
 }
 
 export function emptyConfig(): BrosConfig {

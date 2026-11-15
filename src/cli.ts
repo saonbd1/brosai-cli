@@ -8,6 +8,7 @@ import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvide
 import { readConfig, saveProviderSettings } from "./config.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints } from "./checkpoint.ts";
+import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
 import type { ChatMessage } from "./providers/index.ts";
 
 const C = {
@@ -86,6 +87,7 @@ ${C.bold("Flags:")}
   --base-url <url>      Custom OpenAI-compatible base URL
   --cwd <path>          Workspace directory (default: cwd)
   -y, --yes             Auto-approve all commands
+                        (read-only commands and allowlisted patterns never prompt)
   --json                Emit JSON events (for scripting)
   --max-steps <n>       Max agent steps (default 100)
   -c, --continue         Resume the most recent session
@@ -96,11 +98,14 @@ ${C.bold("Flags:")}
   brosai sessions        List saved sessions
   brosai checkpoints     List checkpoints for this workspace
   brosai undo [n]        Restore workspace to before the last n turns
+  brosai allow           List auto-approved command patterns
+  brosai allow add <pat> Always approve commands matching pattern (* wildcard)
+  brosai allow rm <pat>  Remove an approved pattern
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
+${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /allow <pat>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -161,20 +166,21 @@ async function authCmd(providerId: string | undefined, key: string | undefined):
   console.log(C.green(`Saved key for ${providerId} -> ~/.brosai/config.json (0600)`));
 }
 
-async function confirm(question: string): Promise<boolean> {
-  if (!process.stdin.isTTY) return false;
+async function ask(question: string): Promise<string> {
+  if (!process.stdin.isTTY) return "";
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ans = await new Promise<string>((r) => rl.question(question, r));
   rl.close();
-  return /^y(es)?$/i.test(ans.trim());
+  return ans.trim();
 }
 
-function makeApprover() {
+function makeApprover(state: { all: boolean }) {
   return async (cmd: string) => {
-    console.log(C.yellow(`run command? ${cmd}`));
-    const ok = await confirm("  [y/N] ");
-    if (!ok) console.log(C.dim("  denied"));
-    return ok;
+    if (state.all || isAllowlisted(cmd) || isReadOnlyCommand(cmd)) return true;
+    const ans = await ask(`${C.yellow(`run command? ${cmd}`)}\n  [y/n/a] `);
+    if (/^a$/i.test(ans)) { state.all = true; return true; }
+    if (!/^y(es)?$/i.test(ans)) { console.log(C.dim("  denied")); return false; }
+    return true;
   };
 }
 
@@ -235,7 +241,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     systemPrompt: opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT,
     tools: opts.mode === "plan" ? toolSpecs().filter((t) => READONLY_TOOLS.has(t.name)) : undefined,
     maxSteps: opts.maxSteps,
-    ctx: { approve: opts.yes ? () => true : makeApprover() },
+    ctx: { approve: opts.yes ? () => true : makeApprover({ all: false }) },
     events: makeEvents(session, opts.json),
   });
   session.history.push({ role: "user", content: prompt });
@@ -294,6 +300,19 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       else console.log(`current mode: ${opts.mode} (usage: /mode act|plan)`);
       rl.prompt(); continue;
     }
+    if (input === "/allow" || input.startsWith("/allow ")) {
+      const parts = input.split(/\s+/);
+      const sub = parts[1];
+      const pat = parts.slice(2).join(" ");
+      if (sub === "add" && pat) { addAllowedCommand(pat); console.log(C.green(`allowed: ${pat}`)); }
+      else if ((sub === "rm" || sub === "remove") && pat) { removeAllowedCommand(pat); console.log(C.green(`removed: ${pat}`)); }
+      else {
+        const list = allowedCommands();
+        if (!list.length) console.log(C.dim("no allowlisted patterns (usage: /allow add <pattern>, * wildcard)"));
+        else for (const p of list) console.log(`  ${p}`);
+      }
+      rl.prompt(); continue;
+    }
     if (input === "/checkpoints") {
       const cps = listCheckpoints(opts.cwd);
       if (!cps.length) console.log(C.dim("no checkpoints for this workspace"));
@@ -333,6 +352,16 @@ async function main(): Promise<void> {
     const cp = await undoCheckpoint(opts.cwd, n);
     if (cp) console.log(C.green(`restored workspace to before: ${cp.label} (${cp.hash.slice(0, 7)})`));
     else console.log(C.yellow("no checkpoints to undo (is git installed? has brosai run here before?)"));
+    return;
+  }
+  if (argv[0] === "allow") {
+    const sub = argv[1];
+    const pat = argv.slice(2).join(" ").trim();
+    if (sub === "add" && pat) { addAllowedCommand(pat); console.log(C.green(`allowed: ${pat}`)); return; }
+    if ((sub === "rm" || sub === "remove") && pat) { removeAllowedCommand(pat); console.log(C.green(`removed: ${pat}`)); return; }
+    const list = allowedCommands();
+    if (!list.length) console.log("No allowlisted patterns. Usage: brosai allow add \"npm test*\"");
+    else for (const p of list) console.log(`  ${p}`);
     return;
   }
 
