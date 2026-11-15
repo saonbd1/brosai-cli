@@ -2,3 +2,4 @@ brosai-linux
 brosai.exe
 node_modules/
 *.log
+Desktop/
