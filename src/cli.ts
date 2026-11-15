@@ -6,6 +6,7 @@ import { SYSTEM_PROMPT } from "./prompt.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings } from "./config.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
+import { createCheckpoint, undoCheckpoint, listCheckpoints } from "./checkpoint.ts";
 import type { ChatMessage } from "./providers/index.ts";
 
 const C = {
@@ -28,10 +29,11 @@ interface CliOpts {
   maxSteps: number;
   continueSession?: boolean;
   resume?: string;
+  noCheckpoint: boolean;
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
-  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100 };
+  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false };
   const positional: string[] = [];
   let command: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -48,6 +50,7 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--max-steps": opts.maxSteps = Number(next()) || 100; break;
       case "--continue": case "-c": opts.continueSession = true; break;
       case "--resume": opts.resume = next(); break;
+      case "--no-checkpoint": opts.noCheckpoint = true; break;
       case "--help": case "-h": command = "help"; break;
       case "--version": case "-v": command = "version"; break;
       default:
@@ -78,12 +81,15 @@ ${C.bold("Flags:")}
   --max-steps <n>       Max agent steps (default 100)
   -c, --continue         Resume the most recent session
   --resume <file>        Resume a specific session file
+  --no-checkpoint        Disable git shadow-repo checkpoints
   brosai sessions        List saved sessions
+  brosai checkpoints     List checkpoints for this workspace
+  brosai undo [n]        Restore workspace to before the last n turns
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /provider <id>  /model <id>  /clear  /cost  /help  /exit`);
+${C.bold("REPL commands:")} /provider <id>  /model <id>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -204,6 +210,7 @@ function makeEvents(session: Session, jsonMode: boolean) {
 }
 
 async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
+  if (!opts.noCheckpoint) await createCheckpoint(opts.cwd, prompt);
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
@@ -257,6 +264,18 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       rl.prompt(); continue;
     }
     if (input === "/help") { usage(); rl.prompt(); continue; }
+    if (input === "/undo" || input.startsWith("/undo ")) {
+      const n = Math.max(1, Number(input.split(/\s+/)[1]) || 1);
+      const cp = await undoCheckpoint(opts.cwd, n);
+      console.log(cp ? C.green(`undone ${cp.label} (${cp.hash.slice(0, 7)})`) : C.yellow("no checkpoints to undo"));
+      rl.prompt(); continue;
+    }
+    if (input === "/checkpoints") {
+      const cps = listCheckpoints(opts.cwd);
+      if (!cps.length) console.log(C.dim("no checkpoints for this workspace"));
+      for (const cp of cps.slice(-10).reverse()) console.log(`  ${cp.hash.slice(0, 7)}  ${cp.time}  ${cp.label.slice(0, 60)}`);
+      rl.prompt(); continue;
+    }
     try {
       await runTurn(session, input, opts);
       console.log("");
@@ -276,6 +295,20 @@ async function main(): Promise<void> {
     const list = listSessions();
     if (!list.length) console.log("No saved sessions.");
     for (const s of list) console.log(`  ${s.file}  ${s.updatedAt}  ${s.provider}/${s.model}  turns=${s.turns}  ${s.cwd}`);
+    return;
+  }
+  if (argv[0] === "checkpoints" || argv[0] === "undo") {
+    const { opts, positional } = parseArgs(argv.slice(1));
+    if (argv[0] === "checkpoints") {
+      const cps = listCheckpoints(opts.cwd);
+      if (!cps.length) console.log("No checkpoints for this workspace.");
+      for (const cp of cps.slice(-20).reverse()) console.log(`  ${cp.hash.slice(0, 7)}  ${cp.time}  ${cp.label.slice(0, 60)}`);
+      return;
+    }
+    const n = Math.max(1, Number(positional[0]) || 1);
+    const cp = await undoCheckpoint(opts.cwd, n);
+    if (cp) console.log(C.green(`restored workspace to before: ${cp.label} (${cp.hash.slice(0, 7)})`));
+    else console.log(C.yellow("no checkpoints to undo (is git installed? has brosai run here before?)"));
     return;
   }
 
