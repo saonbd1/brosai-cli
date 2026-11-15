@@ -284,6 +284,26 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "connect_service",
+    description: "Connect an external account/service via OAuth device flow. Currently supports 'github'. Prints a verification link + code for the user to authorize, then waits.",
+    parameters: {
+      type: "object",
+      properties: { service: { type: "string", enum: ["github"], description: "Service to connect" } },
+      required: ["service"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      if (args.service !== "github") return { ok: false, output: `Unsupported service: ${args.service}` };
+      try {
+        const { connectGitHub } = await import("../services.ts");
+        const msg = await connectGitHub();
+        return { ok: true, output: msg };
+      } catch (e) {
+        return { ok: false, output: `Connect failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+  },
+  {
     name: "todo_write",
     description: "Replace the session task list. Use to plan multi-step work and track progress.",
     parameters: {

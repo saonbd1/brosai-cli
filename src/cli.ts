@@ -226,56 +226,14 @@ async function modelsCmd(args: string[]): Promise<void> {
   }
 }
 
-const GH_CLIENT_ID = "178c6fc778ccc68e1d6a"; // GitHub CLI's public OAuth app client id
-const GH_DEVICE_CODE_URL = "https://github.com/login/device/code";
-const GH_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
-
 async function githubAuthFlow(): Promise<void> {
-  const req = async (url: string, body: Record<string, string>) => {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
-    return res.json() as Promise<any>;
-  };
-
-  const dc = await req(GH_DEVICE_CODE_URL, { client_id: GH_CLIENT_ID, scope: "repo read:org gist workflow" });
-  if (!dc.device_code) throw new Error(`device flow failed: ${JSON.stringify(dc).slice(0, 200)}`);
-
-  console.log(`\nTo connect your GitHub account:\n`);
-  console.log(`  1. Open: ${C.bold(dc.verification_uri)}`);
-  console.log(`  2. Enter code: ${C.bold(dc.user_code)}\n`);
-  console.log(C.dim("Waiting for authorization (expires in 15 min, Ctrl+C to cancel)..."));
-
-  const deadline = Date.now() + (dc.expires_in ?? 900) * 1000;
-  const interval = Math.max(5, dc.interval ?? 5) * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval));
-    const tok = await req(GH_ACCESS_TOKEN_URL, {
-      client_id: GH_CLIENT_ID,
-      device_code: dc.device_code,
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-    });
-    if (tok.access_token) {
-      // store into the github MCP server env (create the server entry if missing)
-      const { readConfig, writeConfig } = await import("./config.ts");
-      const cfg = readConfig();
-      const srv = cfg.mcpServers?.github ?? { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] };
-      srv.env = { ...(srv.env ?? {}), GITHUB_PERSONAL_ACCESS_TOKEN: tok.access_token };
-      cfg.mcpServers = { ...(cfg.mcpServers ?? {}), github: srv };
-      writeConfig(cfg);
-      console.log(C.green("\nGitHub connected! Token saved to ~/.brosai/config.json (0600)."));
-      console.log(C.dim("The github MCP tools are active on your next brosai run."));
-      return;
-    }
-    if (tok.error === "authorization_pending") continue;
-    if (tok.error === "slow_down") { await new Promise((r) => setTimeout(r, 5000)); continue; }
-    throw new Error(`authorization failed: ${tok.error_description ?? tok.error ?? "unknown"}`);
+  const { connectGitHub } = await import("./services.ts");
+  try {
+    console.log(await connectGitHub());
+  } catch (e) {
+    console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
   }
-  throw new Error("device code expired — run 'brosai auth github' again");
 }
 
 async function authCmd(providerId: string | undefined, key: string | undefined): Promise<void> {
