@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { runAgent } from "./agent.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
+import { toolSpecs } from "./tools/index.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings } from "./config.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
@@ -30,10 +31,11 @@ interface CliOpts {
   continueSession?: boolean;
   resume?: string;
   noCheckpoint: boolean;
+  mode: "act" | "plan";
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
-  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false };
+  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false, mode: "act" };
   const positional: string[] = [];
   let command: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -51,6 +53,13 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--continue": case "-c": opts.continueSession = true; break;
       case "--resume": opts.resume = next(); break;
       case "--no-checkpoint": opts.noCheckpoint = true; break;
+      case "--plan": opts.mode = "plan"; break;
+      case "--mode": {
+        const m = next();
+        if (m !== "act" && m !== "plan") { console.error(C.red(`Unknown mode: ${m}`)); process.exit(2); }
+        opts.mode = m;
+        break;
+      }
       case "--help": case "-h": command = "help"; break;
       case "--version": case "-v": command = "version"; break;
       default:
@@ -82,6 +91,8 @@ ${C.bold("Flags:")}
   -c, --continue         Resume the most recent session
   --resume <file>        Resume a specific session file
   --no-checkpoint        Disable git shadow-repo checkpoints
+  --plan                 Plan mode: read-only tools, outputs a plan only
+  --mode <act|plan>      Agent mode (default: act)
   brosai sessions        List saved sessions
   brosai checkpoints     List checkpoints for this workspace
   brosai undo [n]        Restore workspace to before the last n turns
@@ -89,7 +100,7 @@ ${C.bold("Flags:")}
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /provider <id>  /model <id>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
+${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -209,13 +220,20 @@ function makeEvents(session: Session, jsonMode: boolean) {
   };
 }
 
+const PLAN_PROMPT = `${SYSTEM_PROMPT}
+
+PLAN MODE: You are in plan mode. You may ONLY use read_file, glob, and grep — no writes, edits, or commands. Investigate the codebase, then output a concrete step-by-step implementation plan. Do NOT make any changes. End your reply with the plan clearly formatted.`;
+
+const READONLY_TOOLS = new Set(["read_file", "glob", "grep"]);
+
 async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
-  if (!opts.noCheckpoint) await createCheckpoint(opts.cwd, prompt);
+  if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
     history: session.history,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT,
+    tools: opts.mode === "plan" ? toolSpecs().filter((t) => READONLY_TOOLS.has(t.name)) : undefined,
     maxSteps: opts.maxSteps,
     ctx: { approve: opts.yes ? () => true : makeApprover() },
     events: makeEvents(session, opts.json),
@@ -268,6 +286,12 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       const n = Math.max(1, Number(input.split(/\s+/)[1]) || 1);
       const cp = await undoCheckpoint(opts.cwd, n);
       console.log(cp ? C.green(`undone ${cp.label} (${cp.hash.slice(0, 7)})`) : C.yellow("no checkpoints to undo"));
+      rl.prompt(); continue;
+    }
+    if (input === "/mode" || input.startsWith("/mode ")) {
+      const m = input.split(/\s+/)[1];
+      if (m === "plan" || m === "act") { opts.mode = m; console.log(C.green(`mode -> ${m}`)); }
+      else console.log(`current mode: ${opts.mode} (usage: /mode act|plan)`);
       rl.prompt(); continue;
     }
     if (input === "/checkpoints") {
@@ -353,7 +377,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(C.dim(`${C.bold("BrosAi")} ${provider.def.name}/${provider.model} - cwd=${opts.cwd} - /help for commands`));
+  console.log(C.dim(`${C.bold("BrosAi")} ${provider.def.name}/${provider.model} mode=${opts.mode} cwd=${opts.cwd} - /help for commands`));
   await repl(session, opts);
 }
 
