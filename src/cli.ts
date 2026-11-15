@@ -110,7 +110,7 @@ ${C.bold("Flags:")}
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /allow <pat>  /clear  /cost  /diff  /undo  /checkpoints  /help  /exit`);
+${C.bold("REPL commands:")} /status  /provider  /model  /mode  /allow  /sessions  /cost  /diff  /undo  /checkpoints  /clear  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -331,8 +331,31 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
   return last?.role === "assistant" ? (last.content ?? "") : "";
 }
 
+const SLASH_COMMANDS = ["/provider", "/model", "/mode", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
+
+function makeCompleter(getProviderId: () => string) {
+  return (line: string): [string[], string] => {
+    if (!line.startsWith("/")) return [[], line];
+    const parts = line.split(" ");
+    const head = parts[0];
+    const argPrefix = parts.length > 1 ? parts[parts.length - 1] : "";
+    let candidates: string[] = [];
+    if (parts.length === 1 || (parts.length === 2 && line.endsWith(" "))) {
+      candidates = SLASH_COMMANDS;
+    } else {
+      if (head === "/provider") candidates = PROVIDERS.map((p) => p.id);
+      else if (head === "/model") candidates = getProvider(getProviderId())?.models ?? [];
+      else if (head === "/mode") candidates = ["act", "plan"];
+      else if (head === "/undo") candidates = ["1", "2", "3"];
+    }
+    const hits = candidates.filter((c) => c.startsWith(argPrefix));
+    const completions = hits.map((h) => (parts.length > 1 ? parts.slice(0, -1).concat(h).join(" ") : h));
+    return [completions, completions.length === 1 ? completions[0] : line];
+  };
+}
+
 async function repl(session: Session, opts: CliOpts): Promise<void> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> ") });
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> "), completer: makeCompleter(() => session.provider.def.id) });
   rl.prompt();
   for await (const line of rl) {
     const input = line.trim();
@@ -367,6 +390,27 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       const n = Math.max(1, Number(input.split(/\s+/)[1]) || 1);
       const cp = await undoCheckpoint(opts.cwd, n);
       console.log(cp ? C.green(`undone ${cp.label} (${cp.hash.slice(0, 7)})`) : C.yellow("no checkpoints to undo"));
+      rl.prompt(); continue;
+    }
+    if (input === "/status" || input === "/state") {
+      const life = lifetimeUsage();
+      const cps = listCheckpoints(opts.cwd).length;
+      console.log(C.bold(" session status"));
+      console.log(`  provider : ${session.provider.def.name} (${session.provider.def.id})`);
+      console.log(`  model    : ${session.provider.model}`);
+      console.log(`  mode     : ${opts.mode}`);
+      console.log(`  cwd      : ${opts.cwd}`);
+      console.log(`  session  : ${session.sessionFile ?? "(new)"}  history=${session.history.length} msgs`);
+      console.log(`  steps    : ${session.steps}   tokens: ${session.usage.input} in / ${session.usage.output} out   est ${formatCost(session.costUsd)}`);
+      if (life) console.log(`  lifetime : ${life.input} in / ${life.output} out   est ${formatCost(life.costUsd)}`);
+      console.log(`  todos    : ${session.todos.length} (${session.todos.filter((t) => t.status === "completed").length} done)`);
+      console.log(`  checkpoints: ${cps}`);
+      rl.prompt(); continue;
+    }
+    if (input === "/sessions") {
+      const list = listSessions();
+      if (!list.length) console.log(C.dim("no saved sessions"));
+      for (const s of list.slice(0, 10)) console.log(`  ${s.file}  ${s.updatedAt.slice(0, 19)}  ${s.provider}/${s.model}  ${s.cwd}`);
       rl.prompt(); continue;
     }
     if (input === "/mode" || input.startsWith("/mode ")) {
