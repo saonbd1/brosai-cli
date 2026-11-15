@@ -9,6 +9,7 @@ import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvide
 import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
 import { compactHistory } from "./compact.ts";
+import { MarkdownRenderer } from "./markdown.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
 import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
@@ -40,10 +41,11 @@ interface CliOpts {
   noCheckpoint: boolean;
   mode: "act" | "plan";
   contextWindow: number;
+  raw: boolean;
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
-  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false, mode: "act", contextWindow: Number(process.env.BROSAI_CONTEXT_WINDOW) || 32768 };
+  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100, noCheckpoint: false, mode: "act", contextWindow: Number(process.env.BROSAI_CONTEXT_WINDOW) || 32768, raw: false };
   const positional: string[] = [];
   let command: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -63,6 +65,7 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--no-checkpoint": opts.noCheckpoint = true; break;
       case "--plan": opts.mode = "plan"; break;
       case "--context-window": opts.contextWindow = Number(next()) || opts.contextWindow; break;
+      case "--raw": opts.raw = true; break;
       case "--mode": {
         const m = next();
         if (m !== "act" && m !== "plan") { console.error(C.red(`Unknown mode: ${m}`)); process.exit(2); }
@@ -281,7 +284,7 @@ interface Session {
   mcpDefs?: ToolDef[];
 }
 
-function makeEvents(session: Session, jsonMode: boolean) {
+function makeEvents(session: Session, jsonMode: boolean, raw = false) {
   if (jsonMode) {
     return {
       onText: (d: string) => console.log(JSON.stringify({ type: "text", delta: d })),
@@ -299,9 +302,11 @@ function makeEvents(session: Session, jsonMode: boolean) {
       },
     };
   }
+  const md = new MarkdownRenderer();
   return {
-    onText: (d: string) => process.stdout.write(d),
+    onText: (d: string) => process.stdout.write(raw ? d : md.push(d)),
     onToolStart: (name: string, args: string) => {
+      if (!raw) process.stdout.write(md.flush());
       let short = args;
       try { const p = JSON.parse(args); short = p.command ?? p.path ?? p.pattern ?? JSON.stringify(p).slice(0, 80); } catch {}
       console.log(`\n${C.dim("+")} ${C.cyan(name)} ${C.dim(String(short).slice(0, 120))}`);
@@ -312,6 +317,7 @@ function makeEvents(session: Session, jsonMode: boolean) {
     onUsage: (i: number, o: number) => {
       session.usage.input += i; session.usage.output += o;
     },
+    flush: () => { if (!raw) process.stdout.write(md.flush()); },
   };
 }
 
@@ -333,6 +339,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
   const allDefs = opts.mode === "plan" ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name)) : [...TOOLS, ...(session.mcpDefs ?? [])];
+  const events = makeEvents(session, opts.json, opts.raw);
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
@@ -341,8 +348,9 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
     ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
-    events: makeEvents(session, opts.json),
+    events,
   });
+  (events as any).flush?.();
   session.history.push({ role: "user", content: prompt });
   session.history.push(...result.messages);
   session.steps += result.steps;
