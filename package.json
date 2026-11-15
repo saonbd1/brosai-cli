@@ -1,0 +1,9 @@
+{
+  "name": "brosai",
+  "version": "0.1.0",
+  "description": "BrosAi — personal CLI coding agent",
+  "type": "module",
+  "bin": { "brosai": "./src/cli.ts" },
+  "engines": { "node": ">=22.18" },
+  "scripts": { "start": "node src/cli.ts" }
+}

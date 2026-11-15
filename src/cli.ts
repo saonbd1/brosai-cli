@@ -1,0 +1,330 @@
+#!/usr/bin/env node
+import { createInterface } from "node:readline";
+import { resolve } from "node:path";
+import { runAgent } from "./agent.ts";
+import { SYSTEM_PROMPT } from "./prompt.ts";
+import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
+import { readConfig, saveProviderSettings } from "./config.ts";
+import { saveSession, loadSession, listSessions } from "./session.ts";
+import type { ChatMessage } from "./providers/index.ts";
+
+const C = {
+  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
+  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+};
+
+interface CliOpts {
+  provider?: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  cwd: string;
+  yes: boolean;
+  json: boolean;
+  maxSteps: number;
+  continueSession?: boolean;
+  resume?: string;
+}
+
+function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
+  const opts: CliOpts = { cwd: process.cwd(), yes: false, json: false, maxSteps: 100 };
+  const positional: string[] = [];
+  let command: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const next = () => argv[++i];
+    switch (a) {
+      case "--provider": case "-p": opts.provider = next(); break;
+      case "--model": case "-m": opts.model = next(); break;
+      case "--base-url": opts.baseUrl = next(); break;
+      case "--api-key": case "-k": opts.apiKey = next(); break;
+      case "--cwd": opts.cwd = resolve(next()); break;
+      case "--yes": case "-y": opts.yes = true; break;
+      case "--json": opts.json = true; break;
+      case "--max-steps": opts.maxSteps = Number(next()) || 100; break;
+      case "--continue": case "-c": opts.continueSession = true; break;
+      case "--resume": opts.resume = next(); break;
+      case "--help": case "-h": command = "help"; break;
+      case "--version": case "-v": command = "version"; break;
+      default:
+        if (a.startsWith("-")) { console.error(C.red(`Unknown flag: ${a}`)); process.exit(2); }
+        positional.push(a);
+    }
+  }
+  return { opts, positional, command };
+}
+
+function usage(): void {
+  console.log(`${C.bold("BrosAi")} — personal CLI coding agent
+
+${C.bold("Usage:")}
+  brosai "your task"          Run a one-shot task
+  brosai                     Interactive REPL
+  brosai auth <provider>     Save an API key for a provider
+  brosai providers           List providers and key status
+
+${C.bold("Flags:")}
+  -p, --provider <id>   Provider id
+  -m, --model <id>      Model override
+  -k, --api-key <key>   Per-run API key (not saved)
+  --base-url <url>      Custom OpenAI-compatible base URL
+  --cwd <path>          Workspace directory (default: cwd)
+  -y, --yes             Auto-approve all commands
+  --json                Emit JSON events (for scripting)
+  --max-steps <n>       Max agent steps (default 100)
+  -c, --continue         Resume the most recent session
+  --resume <file>        Resume a specific session file
+  brosai sessions        List saved sessions
+
+${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
+${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
+
+${C.bold("REPL commands:")} /provider <id>  /model <id>  /clear  /cost  /help  /exit`);
+}
+
+function keyStatus(providerId: string): string {
+  const cfg = readConfig();
+  const stored = cfg.providers[providerId]?.settings?.apiKey;
+  const def = getProvider(providerId);
+  const envHit = def?.apiKeyEnv.find((e) => process.env[e]);
+  if (stored) return C.green("config") + C.dim(" (saved)");
+  if (envHit) return C.green(envHit);
+  return C.red("none");
+}
+
+function providersCmd(): void {
+  console.log(C.bold("Providers:\n"));
+  const last = readConfig().lastUsedProvider;
+  for (const p of PROVIDERS) {
+    const cur = last === p.id ? C.cyan(" <- last used") : "";
+    console.log(`  ${C.bold(p.id.padEnd(16))} ${p.name.padEnd(24)} key: ${keyStatus(p.id)}${cur}`);
+  }
+}
+
+async function promptHidden(question: string): Promise<string> {
+  process.stdout.write(question);
+  return new Promise((resolveP) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode?.(true);
+    stdin.resume();
+    let buf = "";
+    const onData = (d: Buffer) => {
+      for (const ch of d.toString()) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.setRawMode?.(false);
+          stdin.pause();
+          stdin.removeListener("data", onData);
+          process.stdout.write("\n");
+          resolveP(buf);
+          return;
+        } else if (ch === "") { process.exit(130); }
+        else if (ch === "\b" || ch === "") { buf = buf.slice(0, -1); process.stdout.write("\b \b"); }
+        else { buf += ch; process.stdout.write("*"); }
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+async function authCmd(providerId: string | undefined, key: string | undefined): Promise<void> {
+  if (!providerId) {
+    console.log("Usage: brosai auth <provider> [api-key]");
+    console.log("Providers:", PROVIDERS.map((p) => p.id).join(", "));
+    process.exit(2);
+  }
+  if (!getProvider(providerId)) { console.error(C.red(`Unknown provider: ${providerId}`)); process.exit(2); }
+  const apiKey = key ?? (await promptHidden(`API key for ${providerId}: `));
+  if (!apiKey?.trim()) { console.error(C.red("Empty key")); process.exit(2); }
+  storeKey(providerId, apiKey.trim());
+  console.log(C.green(`Saved key for ${providerId} -> ~/.brosai/config.json (0600)`));
+}
+
+async function confirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ans = await new Promise<string>((r) => rl.question(question, r));
+  rl.close();
+  return /^y(es)?$/i.test(ans.trim());
+}
+
+function makeApprover() {
+  return async (cmd: string) => {
+    console.log(C.yellow(`run command? ${cmd}`));
+    const ok = await confirm("  [y/N] ");
+    if (!ok) console.log(C.dim("  denied"));
+    return ok;
+  };
+}
+
+interface Session {
+  provider: ResolvedProvider;
+  history: ChatMessage[];
+  usage: { input: number; output: number };
+  steps: number;
+  sessionFile?: string;
+}
+
+function makeEvents(session: Session, jsonMode: boolean) {
+  if (jsonMode) {
+    return {
+      onText: (d: string) => console.log(JSON.stringify({ type: "text", delta: d })),
+      onToolStart: (name: string, args: string) => {
+        let parsed: any = args;
+        try { parsed = JSON.parse(args); } catch {}
+        console.log(JSON.stringify({ type: "tool_start", name, args: parsed }));
+      },
+      onToolEnd: (name: string, result: any) => {
+        console.log(JSON.stringify({ type: "tool_end", name, ok: result.ok, output: result.output.slice(0, 2000) }));
+      },
+      onUsage: (i: number, o: number) => {
+        session.usage.input += i; session.usage.output += o;
+        console.log(JSON.stringify({ type: "usage", input: i, output: o }));
+      },
+    };
+  }
+  return {
+    onText: (d: string) => process.stdout.write(d),
+    onToolStart: (name: string, args: string) => {
+      let short = args;
+      try { const p = JSON.parse(args); short = p.command ?? p.path ?? p.pattern ?? JSON.stringify(p).slice(0, 80); } catch {}
+      console.log(`\n${C.dim("+")} ${C.cyan(name)} ${C.dim(String(short).slice(0, 120))}`);
+    },
+    onToolEnd: (name: string, result: any) => {
+      console.log(C.dim(`  |- ${result.ok ? "ok" : "failed"}`));
+    },
+    onUsage: (i: number, o: number) => {
+      session.usage.input += i; session.usage.output += o;
+    },
+  };
+}
+
+async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
+  const result = await runAgent(prompt, {
+    provider: session.provider,
+    cwd: opts.cwd,
+    history: session.history,
+    systemPrompt: SYSTEM_PROMPT,
+    maxSteps: opts.maxSteps,
+    ctx: { approve: opts.yes ? () => true : makeApprover() },
+    events: makeEvents(session, opts.json),
+  });
+  session.history.push({ role: "user", content: prompt });
+  session.history.push(...result.messages);
+  session.steps += result.steps;
+  session.sessionFile = saveSession({
+    file: session.sessionFile,
+    provider: session.provider.def.id,
+    model: session.provider.model,
+    cwd: opts.cwd,
+    history: session.history,
+  });
+  const last = result.messages.at(-1);
+  return last?.role === "assistant" ? (last.content ?? "") : "";
+}
+
+async function repl(session: Session, opts: CliOpts): Promise<void> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> ") });
+  rl.prompt();
+  for await (const line of rl) {
+    const input = line.trim();
+    if (!input) { rl.prompt(); continue; }
+    if (input === "/exit" || input === "/quit") break;
+    if (input === "/clear") { session.history = []; console.log(C.dim("history cleared")); rl.prompt(); continue; }
+    if (input === "/cost") {
+      console.log(`steps=${session.steps} tokens in=${session.usage.input} out=${session.usage.output}`);
+      rl.prompt(); continue;
+    }
+    if (input === "/provider" || input.startsWith("/provider ")) {
+      const id = input.split(/\s+/)[1];
+      if (!id) { console.log("providers:", PROVIDERS.map((p) => p.id).join(", ")); rl.prompt(); continue; }
+      try {
+        session.provider = resolveProvider({ providerId: id });
+        console.log(C.green(`provider -> ${id} (${session.provider.model})`));
+      } catch (e) { console.log(C.red(String(e instanceof Error ? e.message : e))); }
+      rl.prompt(); continue;
+    }
+    if (input === "/model" || input.startsWith("/model ")) {
+      const m = input.split(/\s+/)[1];
+      if (!m) { console.log("current:", session.provider.model); rl.prompt(); continue; }
+      session.provider = { ...session.provider, model: m };
+      saveProviderSettings(session.provider.def.id, { model: m }, { setLastUsed: false });
+      console.log(C.green(`model -> ${m}`));
+      rl.prompt(); continue;
+    }
+    if (input === "/help") { usage(); rl.prompt(); continue; }
+    try {
+      await runTurn(session, input, opts);
+      console.log("");
+    } catch (e) {
+      console.log("\n" + C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
+    }
+    rl.prompt();
+  }
+  rl.close();
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "auth") { await authCmd(argv[1], argv[2]); return; }
+  if (argv[0] === "providers") { providersCmd(); return; }
+  if (argv[0] === "sessions") {
+    const list = listSessions();
+    if (!list.length) console.log("No saved sessions.");
+    for (const s of list) console.log(`  ${s.file}  ${s.updatedAt}  ${s.provider}/${s.model}  turns=${s.turns}  ${s.cwd}`);
+    return;
+  }
+
+  const { opts, positional, command } = parseArgs(argv);
+  if (command === "help") { usage(); return; }
+  if (command === "version") { console.log("brosai 0.1.0"); return; }
+
+  let provider: ResolvedProvider;
+  try {
+    provider = resolveProvider({ providerId: opts.provider, model: opts.model, baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+  } catch (e) {
+    console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+
+  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, steps: 0 };
+  const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
+  if (wantResume) {
+    const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
+    if (saved) {
+      session.history = saved.history;
+      session.sessionFile = opts.resume ?? listSessions()[0]?.file;
+      console.log(C.dim(`resumed session (${saved.history.length} messages, ${saved.provider}/${saved.model})`));
+      try { provider = { ...provider, model: saved.model }; session.provider = provider; } catch {}
+    } else {
+      console.log(C.yellow(`no session found${opts.resume ? ` for ${opts.resume}` : ""}`));
+    }
+  }
+  const ac = new AbortController();
+  process.on("SIGINT", () => ac.abort());
+
+  const prompt = positional.join(" ");
+  if (prompt) {
+    if (opts.json) {
+      const text = await runTurn(session, prompt, opts);
+      console.log(JSON.stringify({ type: "final", text, usage: session.usage, steps: session.steps }));
+    } else {
+      await runTurn(session, prompt, opts);
+      console.log("");
+      console.log(C.dim(`-- ${provider.def.name}/${provider.model} - ${session.steps} steps - ${session.usage.input}+${session.usage.output} tokens`));
+    }
+    return;
+  }
+
+  console.log(C.dim(`${C.bold("BrosAi")} ${provider.def.name}/${provider.model} - cwd=${opts.cwd} - /help for commands`));
+  await repl(session, opts);
+}
+
+main().catch((e) => {
+  console.error(C.red(`fatal: ${e instanceof Error ? e.stack ?? e.message : String(e)}`));
+  process.exit(1);
+});
