@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface TodoItem {
@@ -266,6 +266,24 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "apply_patch",
+    description: "Apply a Codex-style patch to files in the workspace. Format:\n*** Begin Patch\n*** Add File: path\n+line\n*** Update File: path\n@@ optional context\n context_line\n-old_line\n+new_line\n*** Delete File: path\n*** Move to: newpath (after Update File)\n*** End Patch",
+    parameters: {
+      type: "object",
+      properties: { patch: { type: "string", description: "The full patch text between Begin Patch and End Patch markers" } },
+      required: ["patch"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      try {
+        const r = applyPatch(String(args.patch ?? ""), ctx);
+        return { ok: r.errors.length === 0, output: [...r.applied, ...r.errors].join("\n") || "Patch applied (no changes)" };
+      } catch (e) {
+        return { ok: false, output: `Patch failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+  },
+  {
     name: "todo_write",
     description: "Replace the session task list. Use to plan multi-step work and track progress.",
     parameters: {
@@ -363,6 +381,177 @@ export async function runTool(name: string, argsJson: string, ctx: ToolContext):
   } catch (e) {
     return { ok: false, output: `Tool error: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+interface PatchResult {
+  applied: string[];
+  errors: string[];
+}
+
+/** Parse and apply a Codex-style patch. All paths are sandboxed to ctx.cwd. */
+function applyPatch(patch: string, ctx: ToolContext): PatchResult {
+  const applied: string[] = [];
+  const errors: string[] = [];
+  const lines = patch.replace(/\r\n/g, "\n").split("\n");
+
+  if (!lines.some((l) => l.trim() === "*** Begin Patch")) {
+    return { applied, errors: ["Missing '*** Begin Patch' marker"] };
+  }
+
+  type Op = { kind: "add" | "del" | "ctx"; text: string };
+  interface Section { action: "add" | "update" | "delete"; path: string; moveTo?: string; hunks: Op[][] }
+  const sections: Section[] = [];
+  let cur: Section | null = null;
+  let curHunk: Op[] | null = null;
+  let inHunks = false;
+
+  const flushHunk = () => { if (cur && curHunk) { cur.hunks.push(curHunk); curHunk = null; } };
+
+  for (const raw of lines) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const t = line.trim();
+    if (t === "*** Begin Patch" || t === "*** End Patch") continue;
+    const m = t.match(/^\*\*\* (Add|Update|Delete) File:\s*(.+)$/);
+    if (m) {
+      flushHunk();
+      cur = { action: m[1].toLowerCase() as Section["action"], path: m[2].trim(), hunks: [] };
+      sections.push(cur);
+      inHunks = false;
+      continue;
+    }
+    const mv = t.match(/^\*\*\* Move to:\s*(.+)$/);
+    if (mv && cur) { cur.moveTo = mv[1].trim(); continue; }
+    if (!cur) continue;
+    if (cur.action === "add") {
+      if (t.startsWith("***")) continue;
+      if (!cur.hunks.length && !curHunk) cur.hunks.push([]);
+      const h = cur.hunks[cur.hunks.length - 1];
+      if (line.startsWith("+")) h.push({ kind: "add", text: line.slice(1) });
+      else if (line.startsWith(" ")) h.push({ kind: "ctx", text: line.slice(1) });
+      else h.push({ kind: "add", text: line }); // tolerate unprefixed lines in Add File
+      continue;
+    }
+    if (cur.action === "delete") continue;
+    // update file
+    if (t.startsWith("@@")) {
+      flushHunk();
+      curHunk = [];
+      inHunks = true;
+      continue;
+    }
+    if (inHunks && curHunk) {
+      if (line.startsWith("+") && !line.startsWith("+++")) curHunk.push({ kind: "add", text: line.slice(1) });
+      else if (line.startsWith("-") && !line.startsWith("---")) curHunk.push({ kind: "del", text: line.slice(1) });
+      else if (line.startsWith(" ")) curHunk.push({ kind: "ctx", text: line.slice(1) });
+      else if (line === "") curHunk.push({ kind: "ctx", text: "" });
+      else if (t.startsWith("***")) { flushHunk(); inHunks = false; }
+    } else if (!inHunks && cur.hunks.length === 0 && line.trim() !== "") {
+      // update section without @@ markers: treat whole body as one hunk
+      curHunk = curHunk ?? [];
+      inHunks = true;
+      if (line.startsWith("+")) curHunk.push({ kind: "add", text: line.slice(1) });
+      else if (line.startsWith("-")) curHunk.push({ kind: "del", text: line.slice(1) });
+      else if (line.startsWith(" ")) curHunk.push({ kind: "ctx", text: line.slice(1) });
+      else curHunk.push({ kind: "ctx", text: line });
+    }
+  }
+  flushHunk();
+
+  // First pass: validate all paths before touching anything
+  for (const s of sections) {
+    try {
+      safePath(ctx, s.path);
+      if (s.moveTo) safePath(ctx, s.moveTo);
+    } catch (e) {
+      errors.push(`${s.path}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (errors.length) return { applied, errors };
+
+  // Second pass: apply
+  for (const s of sections) {
+    try {
+      const p = safePath(ctx, s.path);
+      if (s.action === "add") {
+        if (existsSync(p)) { errors.push(`${s.path}: already exists`); continue; }
+        const content = s.hunks.flat().filter((o) => o.kind !== "del").map((o) => o.text).join("\n") + "\n";
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, content, "utf8");
+        applied.push(`+ ${relative(ctx.cwd, p)}`);
+      } else if (s.action === "delete") {
+        if (!existsSync(p)) { errors.push(`${s.path}: not found`); continue; }
+        
+        unlinkSync(p);
+        applied.push(`- ${relative(ctx.cwd, p)}`);
+      } else {
+        if (!existsSync(p)) { errors.push(`${s.path}: not found`); continue; }
+        const orig = readFileSync(p, "utf8").split("\n");
+        const out: string[] = [];
+        let pos = 0;
+        let failed = false;
+        for (const hunk of s.hunks) {
+          // find anchor: first ctx/del op must match somewhere at/after pos
+          const anchorIdx = hunk.findIndex((o) => o.kind !== "add");
+          const anchor = anchorIdx >= 0 ? hunk[anchorIdx] : null;
+          let start = pos;
+          if (anchor) {
+            // scan forward for a position where anchor matches
+            let found = -1;
+            for (let i = pos; i <= orig.length; i++) {
+              if (orig[i] === anchor.text) {
+                // verify the full expected ctx/del sequence matches consecutively
+                let ok = true, j = i;
+                for (const o of hunk) {
+                  if (o.kind === "add") continue;
+                  if (j >= orig.length || orig[j] !== o.text) { ok = false; break; }
+                  j++;
+                }
+                if (ok) { found = i; break; }
+              }
+            }
+            if (found < 0) { errors.push(`${s.path}: hunk context not found`); failed = true; break; }
+            start = found;
+          }
+          // emit everything up to start, then apply hunk
+          out.push(...orig.slice(pos, start));
+          let filePos = start;
+          for (const o of hunk) {
+            if (o.kind === "ctx") {
+              if (orig[filePos] !== o.text) { errors.push(`${s.path}: context mismatch near line ${filePos + 1}`); failed = true; break; }
+              out.push(o.text); filePos++;
+            } else if (o.kind === "del") {
+              if (orig[filePos] !== o.text) { errors.push(`${s.path}: delete mismatch near line ${filePos + 1}`); failed = true; break; }
+              filePos++;
+            } else {
+              out.push(o.text);
+            }
+          }
+          if (failed) break;
+          pos = filePos;
+        }
+        if (failed) continue;
+        out.push(...orig.slice(pos));
+        let content = out.join("\n");
+        if (orig.at(-1) === "" && !content.endsWith("\n")) content += "\n";
+        const dst = s.moveTo ? safePath(ctx, s.moveTo) : p;
+        if (s.moveTo) {
+          mkdirSync(dirname(dst), { recursive: true });
+          writeFileSync(dst, content, "utf8");
+          
+          unlinkSync(p);
+          applied.push(`${relative(ctx.cwd, p)} -> ${relative(ctx.cwd, dst)}`);
+        } else {
+          const tmp = `${p}.tmp-${process.pid}`;
+          writeFileSync(tmp, content, "utf8");
+          renameSync(tmp, p);
+          applied.push(`~ ${relative(ctx.cwd, p)}`);
+        }
+      }
+    } catch (e) {
+      errors.push(`${s.path}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { applied, errors };
 }
 
 function globToRegex(glob: string): RegExp {

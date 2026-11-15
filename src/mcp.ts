@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { readConfig, writeConfig } from "./config.ts";
 import type { ToolDef, ToolResult } from "./tools/index.ts";
 
@@ -35,8 +35,17 @@ class McpClient {
   }
 
   async start(): Promise<void> {
+    // env values of the form "$(cmd)" are evaluated at spawn time (e.g. "$(gh auth token)")
+    const resolvedEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.cfg.env ?? {})) {
+      const m = /^\$\((.+)\)$/.exec(v.trim());
+      if (m) {
+        try { resolvedEnv[k] = execSync(m[1], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 }).trim(); }
+        catch { resolvedEnv[k] = v; }
+      } else resolvedEnv[k] = v;
+    }
     this.proc = spawn(this.cfg.command, this.cfg.args ?? [], {
-      env: { ...process.env, ...(this.cfg.env ?? {}) },
+      env: { ...process.env, ...resolvedEnv },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

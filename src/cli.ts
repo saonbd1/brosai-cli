@@ -506,9 +506,24 @@ async function main(): Promise<void> {
       const name = argv[2];
       const rest = argv.slice(3);
       const sep = rest.indexOf("--");
-      const cmdParts = sep >= 0 ? rest.slice(sep + 1) : rest;
-      if (!name || !cmdParts.length) { console.error(C.red("Usage: brosai mcp add <name> -- <command> [args...]")); process.exit(2); }
-      addMcpServer(name, { command: cmdParts[0], args: cmdParts.slice(1) });
+      const env: Record<string, string> = {};
+      let cmdParts: string[];
+      if (sep >= 0) {
+        const optsPart = rest.slice(0, sep);
+        for (let i = 0; i < optsPart.length; i++) {
+          if (optsPart[i] === "--env" && optsPart[i + 1]) {
+            const kv = optsPart[i + 1];
+            const eq = kv.indexOf("=");
+            if (eq > 0) env[kv.slice(0, eq)] = kv.slice(eq + 1);
+            i++;
+          }
+        }
+        cmdParts = rest.slice(sep + 1);
+      } else {
+        cmdParts = rest;
+      }
+      if (!name || !cmdParts.length) { console.error(C.red("Usage: brosai mcp add <name> [--env KEY=VAL] -- <command> [args...]")); process.exit(2); }
+      addMcpServer(name, { command: cmdParts[0], args: cmdParts.slice(1), env: Object.keys(env).length ? env : undefined });
       console.log(C.green(`MCP server "${name}" added: ${cmdParts.join(" ")}`));
       console.log(C.dim("It will connect on next brosai run."));
       return;

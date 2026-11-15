@@ -141,7 +141,7 @@ src/
 ### Done
 
 - [x] Agent loop with streaming tool calls
-- [x] 10 core tools (read/write/edit/run/glob/grep/list_dir/move_file/web_fetch/todo_write)
+- [x] 11 core tools (file ops, shell, search, web_fetch, todo_write, apply_patch)
 - [x] Provider layer: OpenAI-compatible + Anthropic, retries
 - [x] Provider catalog (8 providers) + env/config key resolution
 - [x] Interactive REPL + one-shot mode + `--json`
