@@ -3,7 +3,8 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { runAgent } from "./agent.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
-import { toolSpecs, type TodoItem } from "./tools/index.ts";
+import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
+import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from "./mcp.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
@@ -107,6 +108,9 @@ ${C.bold("Flags:")}
   brosai allow add <pat> Always approve commands matching pattern (* wildcard)
   brosai allow rm <pat>  Remove an approved pattern
   brosai diff            Show changes since the last checkpoint
+  brosai mcp             List configured MCP servers
+  brosai mcp add <n> -- <cmd> [args]   Add an MCP server (stdio)
+  brosai mcp rm <n>      Remove an MCP server
   brosai models          List Ollama models on the configured server
   brosai models use <m>  Select an Ollama model (sets ollama as provider)
   brosai models url <u>  Set Ollama server URL (e.g. http://vm-ip:11434)
@@ -260,6 +264,7 @@ interface Session {
   sessionFile?: string;
   approveState: { all: boolean; approved: Set<string> };
   todos: TodoItem[];
+  mcpDefs?: ToolDef[];
 }
 
 function makeEvents(session: Session, jsonMode: boolean) {
@@ -313,12 +318,13 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
   const todoContext = session.todos.length
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
+  const allDefs = opts.mode === "plan" ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name)) : [...TOOLS, ...(session.mcpDefs ?? [])];
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
     history: session.history,
     systemPrompt: basePrompt + todoContext,
-    tools: opts.mode === "plan" ? toolSpecs().filter((t) => READONLY_TOOLS.has(t.name)) : undefined,
+    toolDefs: allDefs,
     maxSteps: opts.maxSteps,
     ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
     events: makeEvents(session, opts.json),
@@ -494,6 +500,35 @@ async function main(): Promise<void> {
     else console.log(C.yellow("no checkpoints to undo (is git installed? has brosai run here before?)"));
     return;
   }
+  if (argv[0] === "mcp") {
+    const sub = argv[1];
+    if (sub === "add") {
+      const name = argv[2];
+      const rest = argv.slice(3);
+      const sep = rest.indexOf("--");
+      const cmdParts = sep >= 0 ? rest.slice(sep + 1) : rest;
+      if (!name || !cmdParts.length) { console.error(C.red("Usage: brosai mcp add <name> -- <command> [args...]")); process.exit(2); }
+      addMcpServer(name, { command: cmdParts[0], args: cmdParts.slice(1) });
+      console.log(C.green(`MCP server "${name}" added: ${cmdParts.join(" ")}`));
+      console.log(C.dim("It will connect on next brosai run."));
+      return;
+    }
+    if (sub === "rm" || sub === "remove") {
+      const name = argv[2];
+      if (!name) { console.error(C.red("Usage: brosai mcp rm <name>")); process.exit(2); }
+      removeMcpServer(name);
+      console.log(C.green(`MCP server "${name}" removed`));
+      return;
+    }
+    const servers = listMcpServers();
+    const names = Object.keys(servers);
+    if (!names.length) { console.log("No MCP servers configured. Add one: brosai mcp add <name> -- <command> [args...]"); return; }
+    for (const n of names) {
+      const s = servers[n];
+      console.log(`  ${C.bold(n)}  ${s.command} ${(s.args ?? []).join(" ")}`);
+    }
+    return;
+  }
   if (argv[0] === "allow") {
     const sub = argv[1];
     const pat = argv.slice(2).join(" ").trim();
@@ -518,6 +553,14 @@ async function main(): Promise<void> {
   }
 
   const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [] };
+
+  const mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+  if (mcp.servers.length) {
+    const nTools = mcp.toolDefs.length;
+    console.error(C.dim(`mcp: connected ${mcp.servers.join(", ")} (${nTools} tools)`));
+    session.mcpDefs = mcp.toolDefs;
+  }
+  process.on("exit", () => mcp.close());
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
     const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
@@ -543,11 +586,16 @@ async function main(): Promise<void> {
       console.log("");
       console.log(C.dim(`-- ${provider.def.name}/${provider.model} - ${session.steps} steps - ${session.usage.input}+${session.usage.output} tokens - est ${formatCost(session.costUsd)}`));
     }
+    mcp.close();
     return;
   }
 
   console.log(C.dim(`${C.bold("BrosAi")} ${provider.def.name}/${provider.model} mode=${opts.mode} cwd=${opts.cwd} - /help for commands`));
-  await repl(session, opts);
+  try {
+    await repl(session, opts);
+  } finally {
+    mcp.close();
+  }
 }
 
 main().catch((e) => {

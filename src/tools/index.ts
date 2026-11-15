@@ -7,10 +7,19 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface ToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (args: any, ctx: ToolContext) => Promise<ToolResult>;
+}
+
 export interface ToolContext {
   cwd: string;
   approve?: (cmd: string) => Promise<boolean> | boolean;
   todos?: TodoItem[];
+  /** When set, only these tool defs may execute (plan mode, MCP bridge). */
+  toolDefs?: ToolDef[];
 }
 
 export interface ToolResult {
@@ -39,7 +48,7 @@ function lineSlice(content: string, offset?: number, limit?: number): string {
   return lines.slice(start, end).map((l, i) => `${start + i + 1}\t${l}`).join("\n");
 }
 
-export const TOOLS = [
+export const TOOLS: ToolDef[] = [
   {
     name: "read_file",
     description: "Read a text file from the workspace. Returns line-numbered content.",
@@ -343,7 +352,7 @@ export function toolSpecs() {
 }
 
 export async function runTool(name: string, argsJson: string, ctx: ToolContext): Promise<ToolResult> {
-  const tool = TOOLS.find((t) => t.name === name);
+  const tool = (ctx.toolDefs ?? TOOLS).find((t) => t.name === name);
   if (!tool) return { ok: false, output: `Unknown tool: ${name}` };
   let args: any;
   try { args = JSON.parse(argsJson || "{}"); } catch (e) {

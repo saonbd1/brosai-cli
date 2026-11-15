@@ -1,5 +1,5 @@
 import { chatStream, type ChatMessage, type ToolSpec } from "./providers/index.ts";
-import { runTool, toolSpecs, type ToolContext, type ToolResult } from "./tools/index.ts";
+import { runTool, toolSpecs, TOOLS, type ToolContext, type ToolDef, type ToolResult } from "./tools/index.ts";
 import type { ResolvedProvider } from "./secrets.ts";
 
 export interface AgentEvents {
@@ -18,6 +18,7 @@ export interface AgentOptions {
   maxTokens?: number;
   signal?: AbortSignal;
   tools?: ToolSpec[];
+  toolDefs?: ToolDef[];
   ctx?: Partial<ToolContext>;
   events?: AgentEvents;
 }
@@ -30,8 +31,9 @@ export interface AgentResult {
 }
 
 export async function runAgent(prompt: string, opts: AgentOptions): Promise<AgentResult> {
-  const tools = opts.tools ?? toolSpecs();
-  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx };
+  const defs = opts.toolDefs ?? TOOLS;
+  const tools = opts.tools ?? defs.map(({ name, description, parameters }) => ({ name, description, parameters }));
+  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx, toolDefs: defs };
   const maxSteps = opts.maxSteps ?? 100;
 
   const messages: ChatMessage[] = [
