@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { runAgent } from "./agent.ts";
-import { SYSTEM_PROMPT } from "./prompt.ts";
+import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
 import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
 import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from "./mcp.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
@@ -323,7 +323,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     provider: session.provider,
     cwd: opts.cwd,
     history: session.history,
-    systemPrompt: basePrompt + todoContext,
+    systemPrompt: basePrompt + todoContext + loadContextFiles(opts.cwd),
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
     ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
