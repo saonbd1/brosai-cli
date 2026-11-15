@@ -28,6 +28,7 @@ export interface BrosConfig {
   lastUsedProvider?: string;
   providers: Record<string, { settings: ProviderSettings; updatedAt: string }>;
   allowedCommands?: string[];
+  usage?: { input: number; output: number; costUsd: number; updatedAt: string };
 }
 
 export function emptyConfig(): BrosConfig {
@@ -62,6 +63,21 @@ export function writeConfig(cfg: BrosConfig): void {
   writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
   try { chmodSync(tmp, 0o600); } catch {}
   renameSync(tmp, p);
+}
+
+export function recordUsage(input: number, output: number, costUsd: number | null): void {
+  const cfg = readConfig();
+  const u = cfg.usage ?? { input: 0, output: 0, costUsd: 0, updatedAt: "" };
+  u.input += input;
+  u.output += output;
+  u.costUsd += costUsd ?? 0;
+  u.updatedAt = new Date().toISOString();
+  cfg.usage = u;
+  writeConfig(cfg);
+}
+
+export function lifetimeUsage(): { input: number; output: number; costUsd: number } | null {
+  return readConfig().usage ?? null;
 }
 
 export function saveProviderSettings(

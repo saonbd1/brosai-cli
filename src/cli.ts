@@ -5,7 +5,8 @@ import { runAgent } from "./agent.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 import { toolSpecs } from "./tools/index.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
-import { readConfig, saveProviderSettings } from "./config.ts";
+import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
+import { estimateCost, formatCost } from "./pricing.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
 import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
@@ -189,6 +190,7 @@ interface Session {
   provider: ResolvedProvider;
   history: ChatMessage[];
   usage: { input: number; output: number };
+  costUsd: number | null;
   steps: number;
   sessionFile?: string;
 }
@@ -248,6 +250,9 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
   session.history.push({ role: "user", content: prompt });
   session.history.push(...result.messages);
   session.steps += result.steps;
+  const turnCost = estimateCost(session.provider.def.id, session.provider.model, result.usage.input, result.usage.output);
+  if (turnCost != null) session.costUsd = (session.costUsd ?? 0) + turnCost;
+  recordUsage(result.usage.input, result.usage.output, turnCost);
   session.sessionFile = saveSession({
     file: session.sessionFile,
     provider: session.provider.def.id,
@@ -268,7 +273,9 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
     if (input === "/exit" || input === "/quit") break;
     if (input === "/clear") { session.history = []; console.log(C.dim("history cleared")); rl.prompt(); continue; }
     if (input === "/cost") {
-      console.log(`steps=${session.steps} tokens in=${session.usage.input} out=${session.usage.output}`);
+      const life = lifetimeUsage();
+      console.log(`session: steps=${session.steps} tokens in=${session.usage.input} out=${session.usage.output} est=${formatCost(session.costUsd)}`);
+      if (life) console.log(`lifetime: tokens in=${life.input} out=${life.output} est=${formatCost(life.costUsd)}`);
       rl.prompt(); continue;
     }
     if (input === "/provider" || input.startsWith("/provider ")) {
@@ -388,7 +395,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, steps: 0 };
+  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0 };
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
     const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
@@ -412,7 +419,7 @@ async function main(): Promise<void> {
     } else {
       await runTurn(session, prompt, opts);
       console.log("");
-      console.log(C.dim(`-- ${provider.def.name}/${provider.model} - ${session.steps} steps - ${session.usage.input}+${session.usage.output} tokens`));
+      console.log(C.dim(`-- ${provider.def.name}/${provider.model} - ${session.steps} steps - ${session.usage.input}+${session.usage.output} tokens - est ${formatCost(session.costUsd)}`));
     }
     return;
   }

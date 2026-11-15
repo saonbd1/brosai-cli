@@ -68,7 +68,17 @@ brosai --resume <file> "..."        # resume specific session
 brosai sessions                     # list saved sessions
 brosai providers                    # provider/key status
 brosai auth <provider>              # save a key
+brosai checkpoints                  # list workspace checkpoints
+brosai undo [n]                     # restore workspace to before last n turns
+brosai diff                         # changes since last checkpoint
+brosai allow                        # list auto-approved command patterns
+brosai allow add "npm test*"        # always approve matching commands
+brosai allow rm "npm test*"         # remove a pattern
+brosai --plan "..."                 # plan mode: read-only, outputs a plan only
+brosai --mode plan                  # same, or --mode act to switch back
 ```
+
+Checkpoints use a hidden git repo under `~/.brosai/checkpoints/` — every turn snapshots the workspace first, so `brosai undo` can restore files and remove agent-created ones. Disable with `--no-checkpoint`. Read-only shell commands (`ls`, `cat`, `git status/diff/log`, …) never prompt for approval; everything else asks `[y/n/a]` where `a` approves the rest of the session.
 
 ### Flags
 
@@ -83,10 +93,13 @@ brosai auth <provider>              # save a key
 | `--json` | JSON event output for scripting |
 | `--max-steps <n>` | Max agent steps (default 100) |
 | `-c, --continue` | Resume latest session |
+| `--plan` / `--mode <act\|plan>` | Plan mode (read-only tools, plan output only) |
+| `--no-checkpoint` | Disable git shadow-repo checkpoints |
+| `--resume <file>` | Resume specific session file |
 
 ### REPL commands
 
-`/provider <id>` · `/model <id>` · `/clear` · `/cost` · `/help` · `/exit`
+`/provider <id>` · `/model <id>` · `/mode <act|plan>` · `/allow <pat>` · `/clear` · `/cost` · `/diff` · `/undo` · `/checkpoints` · `/help` · `/exit`
 
 ## Project layout
 
@@ -123,14 +136,14 @@ src/
 - [x] Standalone binaries: Linux + Windows (Bun compile)
 - [x] Windows support: `cmd.exe` shell, `%USERPROFILE%` config
 - [x] Git repo + GitHub (private)
+- [x] Git checkpoints — shadow-repo snapshots before each turn, `brosai undo [n]`, `/undo`, `/checkpoints`, `--no-checkpoint`
+- [x] Plan mode (`--plan` / `--mode plan`, `/mode` in REPL — read-only tools only)
+- [x] `/diff` and `brosai diff` — changes since last checkpoint
+- [x] Approval UX — read-only auto-approve, `brosai allow` wildcard allowlist, `[y/n/a]` session approve-all
+- [x] Token/cost tracking — pricing table, session + lifetime estimates in `/cost` and run footer
 
 ### Planned / Not done
 
-- [ ] Git checkpoints — auto-snapshot before edits, `undo` support
-- [ ] Plan mode (`--mode plan`, read-only pass before acting)
-- [ ] `/diff` — show session changes
-- [ ] Per-command approval allowlist (`brosai allow add ...`)
-- [ ] Token/cost tracking with pricing table
 - [ ] MCP client (stdio + HTTP tool servers)
 - [ ] Subagents for parallel tasks
 - [ ] Context compaction near model limits
