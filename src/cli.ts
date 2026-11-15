@@ -176,12 +176,13 @@ async function ask(question: string): Promise<string> {
   return ans.trim();
 }
 
-function makeApprover(state: { all: boolean }) {
+function makeApprover(state: { all: boolean; approved: Set<string> }) {
   return async (cmd: string) => {
-    if (state.all || isAllowlisted(cmd) || isReadOnlyCommand(cmd)) return true;
-    const ans = await ask(`${C.yellow(`run command? ${cmd}`)}\n  [y/n/a] `);
-    if (/^a$/i.test(ans)) { state.all = true; return true; }
-    if (!/^y(es)?$/i.test(ans)) { console.log(C.dim("  denied")); return false; }
+    if (state.all || state.approved.has(cmd) || isAllowlisted(cmd) || isReadOnlyCommand(cmd)) return true;
+    const ans = await ask(`${C.yellow(`run command? ${cmd}`)}\n  [y=once n=deny a=all-session] `);
+    if (/^a/i.test(ans)) { state.all = true; return true; }
+    if (!/^y/i.test(ans)) { console.log(C.dim("  denied")); return false; }
+    state.approved.add(cmd);
     return true;
   };
 }
@@ -193,6 +194,7 @@ interface Session {
   costUsd: number | null;
   steps: number;
   sessionFile?: string;
+  approveState: { all: boolean; approved: Set<string> };
 }
 
 function makeEvents(session: Session, jsonMode: boolean) {
@@ -244,7 +246,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     systemPrompt: opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT,
     tools: opts.mode === "plan" ? toolSpecs().filter((t) => READONLY_TOOLS.has(t.name)) : undefined,
     maxSteps: opts.maxSteps,
-    ctx: { approve: opts.yes ? () => true : makeApprover({ all: false }) },
+    ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState) },
     events: makeEvents(session, opts.json),
   });
   session.history.push({ role: "user", content: prompt });
@@ -395,7 +397,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0 };
+  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() } };
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
     const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
