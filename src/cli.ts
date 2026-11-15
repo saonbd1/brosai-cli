@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { runAgent } from "./agent.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
-import { toolSpecs } from "./tools/index.ts";
+import { toolSpecs, type TodoItem } from "./tools/index.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
@@ -255,6 +255,7 @@ interface Session {
   steps: number;
   sessionFile?: string;
   approveState: { all: boolean; approved: Set<string> };
+  todos: TodoItem[];
 }
 
 function makeEvents(session: Session, jsonMode: boolean) {
@@ -295,18 +296,22 @@ const PLAN_PROMPT = `${SYSTEM_PROMPT}
 
 PLAN MODE: You are in plan mode. You may ONLY use read_file, glob, and grep — no writes, edits, or commands. Investigate the codebase, then output a concrete step-by-step implementation plan. Do NOT make any changes. End your reply with the plan clearly formatted.`;
 
-const READONLY_TOOLS = new Set(["read_file", "glob", "grep"]);
+const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
 async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
+  const basePrompt = opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT;
+  const todoContext = session.todos.length
+    ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
+    : "";
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
     history: session.history,
-    systemPrompt: opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT,
+    systemPrompt: basePrompt + todoContext,
     tools: opts.mode === "plan" ? toolSpecs().filter((t) => READONLY_TOOLS.has(t.name)) : undefined,
     maxSteps: opts.maxSteps,
-    ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState) },
+    ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
     events: makeEvents(session, opts.json),
   });
   session.history.push({ role: "user", content: prompt });
@@ -458,7 +463,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() } };
+  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [] };
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
     const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);

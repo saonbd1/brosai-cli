@@ -2,9 +2,15 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export interface ToolContext {
   cwd: string;
   approve?: (cmd: string) => Promise<boolean> | boolean;
+  todos?: TodoItem[];
 }
 
 export interface ToolResult {
@@ -148,6 +154,141 @@ export const TOOLS = [
       };
       walk(ctx.cwd, 0);
       return { ok: true, output: results.length ? results.join("\n") : "No matches" };
+    },
+  },
+  {
+    name: "list_dir",
+    description: "List directory contents (name, type, size). Optional recursive walk.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Directory path relative to workspace (default: root)" },
+        recursive: { type: "boolean", description: "Recurse into subdirectories (default false)" },
+      },
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      const p = safePath(ctx, args.path ?? ".");
+      if (!existsSync(p)) return { ok: false, output: `Not found: ${args.path ?? "."}` };
+      const st = statSync(p);
+      if (!st.isDirectory()) return { ok: true, output: `${relative(ctx.cwd, p)}  (${st.size} bytes)` };
+      const lines: string[] = [];
+      const walk = (dir: string, depth: number, prefix: string) => {
+        if (lines.length > 500 || depth > 8) return;
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+        for (const e of entries) {
+          if (e.name === ".git" || (e.name.startsWith(".") && e.name !== ".env.example")) continue;
+          const full = join(dir, e.name);
+          const rel = relative(ctx.cwd, full);
+          if (e.isDirectory()) {
+            lines.push(`${prefix}${e.name}/`);
+            if (args.recursive) walk(full, depth + 1, prefix + "  ");
+          } else {
+            let size = "";
+            try { size = `  ${statSync(full).size}B`; } catch {}
+            lines.push(`${prefix}${e.name}${size}`);
+          }
+          if (lines.length > 500) return;
+        }
+      };
+      walk(p, 0, "");
+      return { ok: true, output: clip(lines.length ? lines.join("\n") : "(empty directory)") };
+    },
+  },
+  {
+    name: "move_file",
+    description: "Move or rename a file/dir within the workspace.",
+    parameters: {
+      type: "object",
+      properties: { from: { type: "string" }, to: { type: "string" } },
+      required: ["from", "to"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      const src = safePath(ctx, args.from);
+      const dst = safePath(ctx, args.to);
+      if (!existsSync(src)) return { ok: false, output: `Not found: ${args.from}` };
+      if (existsSync(dst)) return { ok: false, output: `Destination exists: ${args.to}` };
+      mkdirSync(dirname(dst), { recursive: true });
+      renameSync(src, dst);
+      return { ok: true, output: `Moved ${relative(ctx.cwd, src)} -> ${relative(ctx.cwd, dst)}` };
+    },
+  },
+  {
+    name: "web_fetch",
+    description: "Fetch a URL and return its text content (HTML stripped). Read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        max_chars: { type: "integer", description: "Max characters to return (default 30000)" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      let u: URL;
+      try { u = new URL(args.url); } catch { return { ok: false, output: `Bad URL: ${args.url}` }; }
+      if (u.protocol !== "http:" && u.protocol !== "https:") return { ok: false, output: "Only http/https URLs allowed" };
+      try {
+        const res = await fetch(u, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+        if (!res.ok) return { ok: false, output: `HTTP ${res.status} for ${u}` };
+        const ct = res.headers.get("content-type") ?? "";
+        if (!ct.includes("text") && !ct.includes("json") && !ct.includes("xml") && !ct.includes("html")) {
+          return { ok: false, output: `Unsupported content-type: ${ct} (only text-like content)` };
+        }
+        let text = await res.text();
+        if (ct.includes("html") || /<html|<body|<div/i.test(text.slice(0, 2000))) {
+          text = text
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+            .replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n\n").trim();
+        }
+        const max = Math.min(args.max_chars ?? 30_000, 100_000);
+        return { ok: true, output: clip(text.length > max ? text.slice(0, max) + `\n…[truncated ${text.length - max} chars]` : text) };
+      } catch (e) {
+        return { ok: false, output: `Fetch failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+  },
+  {
+    name: "todo_write",
+    description: "Replace the session task list. Use to plan multi-step work and track progress.",
+    parameters: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+            },
+            required: ["content", "status"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["todos"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      const next: TodoItem[] = (Array.isArray(args.todos) ? args.todos : []).slice(0, 50).map((t: any) => ({
+        content: String(t?.content ?? "").slice(0, 300),
+        status: ["pending", "in_progress", "completed"].includes(t?.status) ? t.status : "pending",
+      })).filter((t: TodoItem) => t.content);
+      if (ctx.todos) { ctx.todos.length = 0; ctx.todos.push(...next); }
+      else ctx.todos = next;
+      const todos = ctx.todos;
+      const done = todos.filter((t) => t.status === "completed").length;
+      const active = todos.find((t) => t.status === "in_progress");
+      return { ok: true, output: `Todos updated: ${done}/${todos.length} completed${active ? `, active: ${active.content}` : ""}` };
     },
   },
   {

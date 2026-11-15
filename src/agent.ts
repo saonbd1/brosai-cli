@@ -31,7 +31,7 @@ export interface AgentResult {
 
 export async function runAgent(prompt: string, opts: AgentOptions): Promise<AgentResult> {
   const tools = opts.tools ?? toolSpecs();
-  const ctx: ToolContext = { cwd: opts.cwd, approve: opts.ctx?.approve };
+  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx };
   const maxSteps = opts.maxSteps ?? 100;
 
   const messages: ChatMessage[] = [
