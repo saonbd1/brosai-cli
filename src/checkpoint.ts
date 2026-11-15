@@ -136,6 +136,22 @@ export function listCheckpoints(cwd: string): Checkpoint[] {
   return readMeta(cwd).commits;
 }
 
+const DIFF_MAX = 30_000;
+
+/** Diff of the worktree against the most recent checkpoint (all changes since last turn began). */
+export async function workspaceDiff(cwd: string): Promise<string | null> {
+  const gitdir = ensureRepo(cwd);
+  if (!gitdir) return null;
+  const last = readMeta(cwd).commits.at(-1);
+  if (!last) return null;
+  await git(gitdir, cwd, ["add", "-A"]);
+  const d = await git(gitdir, cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", last.hash]);
+  if (d.code !== 0) return `git diff failed: ${d.stderr.trim()}`;
+  const out = d.stdout.trim();
+  if (!out) return "no changes since last checkpoint";
+  return out.length > DIFF_MAX ? out.slice(0, DIFF_MAX) + `\n…[truncated ${out.length - DIFF_MAX} chars]` : out;
+}
+
 /**
  * Restore workspace to the state captured by the most recent checkpoint.
  * Repeats `steps` times to undo multiple turns. Returns restored checkpoint or null.

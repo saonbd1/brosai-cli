@@ -7,7 +7,7 @@ import { toolSpecs } from "./tools/index.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings } from "./config.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
-import { createCheckpoint, undoCheckpoint, listCheckpoints } from "./checkpoint.ts";
+import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
 import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
 import type { ChatMessage } from "./providers/index.ts";
 
@@ -101,11 +101,12 @@ ${C.bold("Flags:")}
   brosai allow           List auto-approved command patterns
   brosai allow add <pat> Always approve commands matching pattern (* wildcard)
   brosai allow rm <pat>  Remove an approved pattern
+  brosai diff            Show changes since the last checkpoint
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /allow <pat>  /clear  /cost  /undo  /checkpoints  /help  /exit`);
+${C.bold("REPL commands:")} /provider <id>  /model <id>  /mode <act|plan>  /allow <pat>  /clear  /cost  /diff  /undo  /checkpoints  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -313,6 +314,11 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       }
       rl.prompt(); continue;
     }
+    if (input === "/diff") {
+      const d = await workspaceDiff(opts.cwd);
+      console.log(d ? `\n${d}\n` : C.yellow("no checkpoints yet — run a task first"));
+      rl.prompt(); continue;
+    }
     if (input === "/checkpoints") {
       const cps = listCheckpoints(opts.cwd);
       if (!cps.length) console.log(C.dim("no checkpoints for this workspace"));
@@ -340,8 +346,13 @@ async function main(): Promise<void> {
     for (const s of list) console.log(`  ${s.file}  ${s.updatedAt}  ${s.provider}/${s.model}  turns=${s.turns}  ${s.cwd}`);
     return;
   }
-  if (argv[0] === "checkpoints" || argv[0] === "undo") {
+  if (argv[0] === "checkpoints" || argv[0] === "undo" || argv[0] === "diff") {
     const { opts, positional } = parseArgs(argv.slice(1));
+    if (argv[0] === "diff") {
+      const d = await workspaceDiff(opts.cwd);
+      console.log(d ?? "no checkpoints for this workspace");
+      return;
+    }
     if (argv[0] === "checkpoints") {
       const cps = listCheckpoints(opts.cwd);
       if (!cps.length) console.log("No checkpoints for this workspace.");
