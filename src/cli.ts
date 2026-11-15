@@ -103,6 +103,9 @@ ${C.bold("Flags:")}
   brosai allow add <pat> Always approve commands matching pattern (* wildcard)
   brosai allow rm <pat>  Remove an approved pattern
   brosai diff            Show changes since the last checkpoint
+  brosai models          List Ollama models on the configured server
+  brosai models use <m>  Select an Ollama model (sets ollama as provider)
+  brosai models url <u>  Set Ollama server URL (e.g. http://vm-ip:11434)
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
@@ -114,6 +117,7 @@ function keyStatus(providerId: string): string {
   const cfg = readConfig();
   const stored = cfg.providers[providerId]?.settings?.apiKey;
   const def = getProvider(providerId);
+  if (def?.noKey) return C.dim("not needed");
   const envHit = def?.apiKeyEnv.find((e) => process.env[e]);
   if (stored) return C.green("config") + C.dim(" (saved)");
   if (envHit) return C.green(envHit);
@@ -153,6 +157,62 @@ async function promptHidden(question: string): Promise<string> {
     };
     stdin.on("data", onData);
   });
+}
+
+function ollamaApiRoot(): string {
+  const cfgBase = readConfig().providers.ollama?.settings?.baseUrl;
+  const defBase = getProvider("ollama")?.baseUrl ?? "http://localhost:11434/v1";
+  const raw = (process.env.BROSAI_OLLAMA_URL?.trim() || process.env.OLLAMA_BASE_URL?.trim() || cfgBase || defBase).replace(/\/+$/, "");
+  return raw.endsWith("/v1") ? raw.slice(0, -3) : raw;
+}
+
+async function ollamaModelList(): Promise<{ name: string; size: number }[]> {
+  const root = ollamaApiRoot();
+  const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`Ollama API returned HTTP ${res.status} at ${root}`);
+  const d = (await res.json()) as any;
+  return (d.models ?? []).map((m: any) => ({ name: String(m.name ?? ""), size: Number(m.size ?? 0) })).filter((m) => m.name);
+}
+
+function fmtSize(bytes: number): string {
+  if (!bytes) return "";
+  return `${(bytes / 1e9).toFixed(1)}GB`;
+}
+
+async function modelsCmd(args: string[]): Promise<void> {
+  const sub = args[0];
+  if (sub === "use" || sub === "select") {
+    const model = args.slice(1).join(" ").trim();
+    if (!model) { console.error(C.red("Usage: brosai models use <model>")); process.exit(2); }
+    saveProviderSettings("ollama", { model }, { setLastUsed: true });
+    console.log(C.green(`ollama model -> ${model} (saved, set as default provider)`));
+    return;
+  }
+  if (sub === "url") {
+    const url = args.slice(1).join(" ").trim();
+    if (!url) { console.error(C.red("Usage: brosai models url <base-url> e.g. http://192.168.1.10:11434")); process.exit(2); }
+    let base = url.replace(/\/+$/, "");
+    if (!/\/v1$/.test(base)) base += "/v1";
+    saveProviderSettings("ollama", { baseUrl: base }, { setLastUsed: false });
+    console.log(C.green(`ollama server -> ${base}`));
+    return;
+  }
+  // list
+  try {
+    const models = await ollamaModelList();
+    const cur = readConfig().providers.ollama?.settings;
+    console.log(C.bold(`Ollama server: ${ollamaApiRoot()}\n`));
+    if (!models.length) { console.log(C.dim("No models installed. Install one: ollama pull qwen2.5:7b-instruct")); return; }
+    for (const m of models) {
+      const mark = cur?.model === m.name ? C.cyan(" <- current") : "";
+      console.log(`  ${m.name.padEnd(40)} ${fmtSize(m.size)}${mark}`);
+    }
+    if (!cur?.model) console.log(C.dim("\nSelect one: brosai models use <name>"));
+  } catch (e) {
+    console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
+    console.error(C.dim("Tip: set server with 'brosai models url http://<host>:11434' or BROSAI_OLLAMA_URL env"));
+    process.exit(1);
+  }
 }
 
 async function authCmd(providerId: string | undefined, key: string | undefined): Promise<void> {
@@ -349,6 +409,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv[0] === "auth") { await authCmd(argv[1], argv[2]); return; }
   if (argv[0] === "providers") { providersCmd(); return; }
+  if (argv[0] === "models" || argv[0] === "ollama") { await modelsCmd(argv.slice(1)); return; }
   if (argv[0] === "sessions") {
     const list = listSessions();
     if (!list.length) console.log("No saved sessions.");

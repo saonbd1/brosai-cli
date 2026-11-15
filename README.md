@@ -58,6 +58,20 @@ brosai -p cerebras "your task"
 
 Env overrides: `BROS_DIR`, `BROS_CONFIG_PATH`, `BROSAI_PROVIDER`, `BROSAI_MODEL`, `BROSAI_API_KEY`.
 
+### Ollama / local models (no API key)
+
+BrosAi speaks the OpenAI-compatible Ollama API, so any installed model works — including one hosted on a remote VM:
+
+```bash
+brosai models url http://192.168.1.10:11434   # point at your Ollama server
+brosai models                                 # list installed models
+brosai models use qwen2.5:7b-instruct         # select one (sets ollama as provider)
+brosai "your task"                            # runs on the local model
+```
+
+Or per-run: `brosai -p ollama -m qwen2.5:7b-instruct --base-url http://192.168.1.10:11434/v1 "task"`.
+Env override: `BROSAI_OLLAMA_URL` / `OLLAMA_BASE_URL`. Note: the Ollama server must listen on a reachable interface (`OLLAMA_HOST=0.0.0.0:11434 ollama serve`) and small models may struggle with tool calling.
+
 ## Usage
 
 ```bash

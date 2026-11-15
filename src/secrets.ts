@@ -9,6 +9,8 @@ export interface ProviderDef {
   apiKeyEnv: string[];
   baseUrl?: string;
   models: string[];
+  /** Provider needs no API key (e.g. local Ollama). */
+  noKey?: boolean;
 }
 
 export const PROVIDERS: ProviderDef[] = [
@@ -19,6 +21,7 @@ export const PROVIDERS: ProviderDef[] = [
   { id: "deepseek", name: "DeepSeek", api: "openai-compat", apiKeyEnv: ["DEEPSEEK_API_KEY"], baseUrl: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
   { id: "cerebras", name: "Cerebras", api: "openai-compat", apiKeyEnv: ["CEREBRAS_API_KEY"], baseUrl: "https://api.cerebras.ai/v1", models: ["gpt-oss-120b", "qwen-3.8-27b"] },
   { id: "groq", name: "Groq", api: "openai-compat", apiKeyEnv: ["GROQ_API_KEY"], baseUrl: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"] },
+  { id: "ollama", name: "Ollama (local/LM Studio)", api: "openai-compat", apiKeyEnv: [], baseUrl: "http://localhost:11434/v1", models: [], noKey: true },
   { id: "custom", name: "Custom (OpenAI-compatible)", api: "openai-compat", apiKeyEnv: ["BROSAI_API_KEY", "CUSTOM_API_KEY"], models: [] },
 ];
 
@@ -63,7 +66,8 @@ export function resolveProvider(opts: {
   if (!def) throw new Error(`Unknown provider "${providerId}". Known: ${PROVIDERS.map((p) => p.id).join(", ")}`);
 
   const stored = cfg.providers[providerId]?.settings;
-  const { apiKey } = opts.apiKey ? { apiKey: opts.apiKey } : resolveApiKey(providerId, stored);
+  const { apiKey: resolvedKey } = opts.apiKey ? { apiKey: opts.apiKey } : resolveApiKey(providerId, stored);
+  const apiKey = resolvedKey ?? (def.noKey ? "ollama" : undefined);
 
   if (!apiKey) {
     const envHint = def.apiKeyEnv.length ? `Set ${def.apiKeyEnv.join(" or ")}` : "Set BROSAI_API_KEY";
@@ -71,9 +75,18 @@ export function resolveProvider(opts: {
   }
 
   const model = opts.model ?? stored?.model ?? process.env.BROSAI_MODEL?.trim() ?? def.models[0];
-  if (!model) throw new Error(`No model for provider "${providerId}". Pass --model <id>`);
+  if (!model) {
+    throw new Error(
+      def.id === "ollama"
+        ? `No model selected for ollama. Run: brosai models  (or brosai -p ollama -m <model>)`
+        : `No model for provider "${providerId}". Pass --model <id>`,
+    );
+  }
 
-  const baseUrl = opts.baseUrl ?? stored?.baseUrl ?? def.baseUrl;
+  const envBase = providerId === "ollama"
+    ? process.env.BROSAI_OLLAMA_URL?.trim() || process.env.OLLAMA_BASE_URL?.trim()
+    : undefined;
+  const baseUrl = opts.baseUrl ?? stored?.baseUrl ?? envBase ?? def.baseUrl;
   if (!baseUrl) throw new Error(`Provider "${providerId}" needs a baseUrl (--base-url or config)`);
 
   return { def, apiKey, model, baseUrl };
