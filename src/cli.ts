@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import { runAgent } from "./agent.ts";
 import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
 import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
@@ -42,6 +43,7 @@ interface CliOpts {
   mode: "act" | "plan";
   contextWindow: number;
   raw: boolean;
+  images?: string[];
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
@@ -66,6 +68,11 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--plan": opts.mode = "plan"; break;
       case "--context-window": opts.contextWindow = Number(next()) || opts.contextWindow; break;
       case "--raw": opts.raw = true; break;
+      case "--image": case "-i": {
+        try { opts.images = [...(opts.images ?? []), imageDataUrl(next())]; }
+        catch (e) { console.error(C.red(String(e instanceof Error ? e.message : e))); process.exit(2); }
+        break;
+      }
       case "--mode": {
         const m = next();
         if (m !== "act" && m !== "plan") { console.error(C.red(`Unknown mode: ${m}`)); process.exit(2); }
@@ -80,6 +87,20 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
     }
   }
   return { opts, positional, command };
+}
+
+const IMAGE_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp" };
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function imageDataUrl(path: string): string {
+  const p = resolve(path);
+  const st = statSync(p);
+  if (!st.isFile()) throw new Error(`not a file: ${path}`);
+  if (st.size > MAX_IMAGE_BYTES) throw new Error(`image too large (${(st.size / 1e6).toFixed(1)}MB > 8MB): ${path}`);
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  const mime = IMAGE_MIME[ext];
+  if (!mime) throw new Error(`unsupported image type .${ext} (png/jpg/gif/webp/bmp): ${path}`);
+  return `data:${mime};base64,${readFileSync(p).toString("base64")}`;
 }
 
 function usage(): void {
@@ -107,6 +128,7 @@ ${C.bold("Flags:")}
   --plan                 Plan mode: read-only tools, outputs a plan only
   --mode <act|plan>      Agent mode (default: act)
   --context-window <n>   Context window in tokens for auto-compaction (default 32768)
+  -i, --image <path>     Attach an image (png/jpg/gif/webp/bmp, <=8MB); repeatable
   brosai sessions        List saved sessions
   brosai checkpoints     List checkpoints for this workspace
   brosai undo [n]        Restore workspace to before the last n turns
@@ -368,6 +390,7 @@ interface Session {
   approveState: { all: boolean; approved: Set<string> };
   todos: TodoItem[];
   mcpDefs?: ToolDef[];
+  pendingImages?: string[];
 }
 
 function makeEvents(session: Session, jsonMode: boolean, raw = false) {
@@ -413,7 +436,8 @@ PLAN MODE: You are in plan mode. You may ONLY use read_file, glob, and grep — 
 
 const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
-async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise<string> {
+async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = []): Promise<string> {
+  const images = [...(opts.images ?? []), ...extraImages];
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
   if (opts.mode !== "plan" && session.history.length > 6) {
     const before = session.history.length;
@@ -435,9 +459,10 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
     maxSteps: opts.maxSteps,
     ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
     events,
+    images: images.length ? images : undefined,
   });
   (events as any).flush?.();
-  session.history.push({ role: "user", content: prompt });
+  session.history.push({ role: "user", content: prompt, images: images.length ? images : undefined });
   session.history.push(...result.messages);
   session.steps += result.steps;
   const turnCost = estimateCost(session.provider.def.id, session.provider.model, result.usage.input, result.usage.output);
@@ -454,7 +479,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
   return last?.role === "assistant" ? (last.content ?? "") : "";
 }
 
-const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
+const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/image", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
 
 function makeCompleter(getProviderId: () => string) {
   return (line: string): [string[], string] => {
@@ -478,6 +503,8 @@ function makeCompleter(getProviderId: () => string) {
 }
 
 async function repl(session: Session, opts: CliOpts): Promise<void> {
+  // One-shot -i/--image flags become pending attachments for the first prompt.
+  if (opts.images?.length) { session.pendingImages = [...(session.pendingImages ?? []), ...opts.images]; opts.images = undefined; }
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> "), completer: makeCompleter(() => session.provider.def.id) });
   activeRepl = rl;
   const reprompt = () => { if (!rl.closed) rl.prompt(); };
@@ -664,8 +691,22 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       for (const cp of cps.slice(-10).reverse()) console.log(`  ${cp.hash.slice(0, 7)}  ${cp.time}  ${cp.label.slice(0, 60)}`);
       reprompt(); continue;
     }
+    if (input === "/image" || input.startsWith("/image ")) {
+      const p = input.split(/\s+/).slice(1).join(" ").trim();
+      if (!p) {
+        const n = session.pendingImages?.length ?? 0;
+        console.log(n ? C.green(`${n} image(s) attached to next message`) : C.dim("usage: /image <path> — attaches to your next message"));
+      } else {
+        try {
+          session.pendingImages = [...(session.pendingImages ?? []), imageDataUrl(p)];
+          console.log(C.green(`attached ${p} (${session.pendingImages.length} pending)`));
+        } catch (e) { console.log(C.red(String(e instanceof Error ? e.message : e))); }
+      }
+      reprompt(); continue;
+    }
     try {
-      await runTurn(session, input, opts);
+      const imgs = session.pendingImages?.splice(0) ?? [];
+      await runTurn(session, input, opts, imgs);
       console.log("");
     } catch (e) {
       console.log("\n" + C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
@@ -779,7 +820,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [] };
+  const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [], pendingImages: [] };
 
   const mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
   if (mcp.servers.length) {

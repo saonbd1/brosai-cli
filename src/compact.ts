@@ -4,7 +4,7 @@ import type { ResolvedProvider } from "./secrets.ts";
 /** Rough token estimate: ~4 chars per token. */
 export function estimateTokens(messages: ChatMessage[]): number {
   let chars = 0;
-  for (const m of messages) chars += JSON.stringify(m).length;
+  for (const m of messages) chars += JSON.stringify({ ...m, images: m.images?.length ? `[${m.images.length} image(s)]` : undefined }).length;
   return Math.ceil(chars / 4);
 }
 

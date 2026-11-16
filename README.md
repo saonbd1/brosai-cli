@@ -110,10 +110,13 @@ Checkpoints use a hidden git repo under `~/.brosai/checkpoints/` — every turn 
 | `--plan` / `--mode <act\|plan>` | Plan mode (read-only tools, plan output only) |
 | `--no-checkpoint` | Disable git shadow-repo checkpoints |
 | `--resume <file>` | Resume specific session file |
+| `-i, --image <path>` | Attach an image to the prompt (png/jpg/gif/webp/bmp, ≤8 MB; repeatable). Requires a vision-capable model/provider |
+
+Images attach to the user message and stay in session history, so follow-up questions keep the visual context. In the REPL use `/image <path>` to queue an image for your next message.
 
 ### REPL commands
 
-`/provider <id>` · `/model <id>` · `/mode <act|plan>` · `/allow <pat>` · `/clear` · `/cost` · `/diff` · `/undo` · `/checkpoints` · `/help` · `/exit`
+`/provider(s)` · `/model` · `/mode <act|plan>` · `/image <path>` · `/allow <pat>` · `/clear` · `/cost` · `/diff` · `/undo` · `/checkpoints` · `/sessions` · `/status` · `/help` · `/exit`
 
 ## Project layout
 

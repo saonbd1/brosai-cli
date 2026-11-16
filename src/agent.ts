@@ -21,6 +21,8 @@ export interface AgentOptions {
   toolDefs?: ToolDef[];
   ctx?: Partial<ToolContext>;
   events?: AgentEvents;
+  /** Data-URL images attached to this turn's user message. */
+  images?: string[];
 }
 
 export interface AgentResult {
@@ -39,7 +41,7 @@ export async function runAgent(prompt: string, opts: AgentOptions): Promise<Agen
   const messages: ChatMessage[] = [
     { role: "system", content: opts.systemPrompt ?? "" },
     ...(opts.history ?? []),
-    { role: "user", content: prompt },
+    { role: "user", content: prompt, images: opts.images?.length ? opts.images : undefined },
   ];
 
   const usage = { input: 0, output: 0 };

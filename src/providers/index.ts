@@ -16,6 +16,8 @@ export type StreamEvent =
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
+  /** Data URLs (data:image/...;base64,...) attached to this message. */
+  images?: string[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -81,7 +83,14 @@ async function* openaiCompatStream(provider: ResolvedProvider, params: ChatParam
     headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
     body: JSON.stringify({
       model: provider.model,
-      messages: params.messages,
+      messages: params.messages.map((m) => {
+        if (!m.images?.length) return m;
+        const parts: unknown[] = [];
+        if (m.content) parts.push({ type: "text", text: m.content });
+        for (const url of m.images) parts.push({ type: "image_url", image_url: { url } });
+        const { images: _img, ...rest } = m;
+        return { ...rest, content: parts };
+      }),
       tools,
       tool_choice: tools ? "auto" : undefined,
       stream: true,
@@ -160,6 +169,15 @@ async function* anthropicStream(provider: ResolvedProvider, params: ChatParams):
         blocks.push({ type: "tool_use", id: tc.id, name: tc.function.name, input });
       }
       return { role: "assistant", content: blocks };
+    }
+    if (m.role === "user" && m.images?.length) {
+      const blocks: any[] = [];
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      for (const url of m.images) {
+        const mm = url.match(/^data:([^;,]+);base64,(.*)$/s);
+        if (mm) blocks.push({ type: "image", source: { type: "base64", media_type: mm[1], data: mm[2] } });
+      }
+      return { role: "user", content: blocks };
     }
     return { role: m.role, content: m.content ?? "" };
   });
