@@ -523,7 +523,7 @@ const SUBAGENT_EXPLORE_PROMPT = `You are a read-only exploration sub-agent. Inve
 
 const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
-async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = [], eventsOverride?: AgentEvents): Promise<string> {
+async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = [], hooks?: { events?: AgentEvents; signal?: AbortSignal }): Promise<string> {
   const images = [...(opts.images ?? []), ...extraImages];
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
   if (opts.mode !== "plan" && session.history.length > 6) {
@@ -536,7 +536,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
   const allDefs = opts.mode === "plan" ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name)) : [...TOOLS, ...(session.mcpDefs ?? [])];
-  const events = eventsOverride ?? makeEvents(session, opts.json, opts.raw);
+  const events = hooks?.events ?? makeEvents(session, opts.json, opts.raw);
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
@@ -544,6 +544,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     systemPrompt: basePrompt + todoContext + loadContextFiles(opts.cwd),
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
+    signal: hooks?.signal,
     ctx: {
       approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)),
       todos: session.todos,
@@ -557,6 +558,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
           systemPrompt: readOnly ? SUBAGENT_EXPLORE_PROMPT : SUBAGENT_ACT_PROMPT,
           toolDefs: childDefs,
           maxSteps: 25,
+          signal: hooks?.signal,
           ctx: { approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)), todos: session.todos },
         });
         const cost = estimateCost(session.provider.def.id, session.provider.model, res.usage.input, res.usage.output);
@@ -1045,7 +1047,7 @@ async function main(): Promise<void> {
       port,
       approvals,
       control,
-      onMessage: async (text, emit) => {
+      onMessage: async (text, emit, signal) => {
         const events: AgentEvents | undefined = emit
           ? {
               onText: (d) => emit("text", { delta: d }),
@@ -1059,7 +1061,7 @@ async function main(): Promise<void> {
             }
           : undefined;
         try {
-          const reply = await runTurn(session, text, opts, [], events);
+          const reply = await runTurn(session, text, opts, [], { events, signal });
           return { reply };
         } catch (e) {
           return { reply: "", error: e instanceof Error ? e.message : String(e) };

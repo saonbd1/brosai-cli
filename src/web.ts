@@ -46,7 +46,7 @@ export interface WebBridge {
   approvals: WebApproval[];
   /** Called for each user message; returns the agent's reply text.
    *  When the request asks for streaming, `emit` sends live agent events. */
-  onMessage: (text: string, emit?: WebEmit) => Promise<{ reply: string; error?: string }>;
+  onMessage: (text: string, emit?: WebEmit, signal?: AbortSignal) => Promise<{ reply: string; error?: string }>;
   close: () => void;
 }
 
@@ -98,7 +98,7 @@ button.danger{background:#da3633}
 </div>
 <div id=log></div>
 <div id=appr></div>
-<form id=f><input id=q placeholder="Ask BrosAi…" autocomplete="off"><button>Send</button></form>
+<form id=f><input id=q placeholder="Ask BrosAi…" autocomplete="off"><button id=stopBtn type=button style="display:none;background:#da3633">■ Stop</button><button id=sendBtn>Send</button></form>
 <script>
 const log=document.getElementById('log'),appr=document.getElementById('appr'),st=document.getElementById('st');
 const prov=document.getElementById('prov'),modeSeg=document.getElementById('modeSeg'),mcpPanel=document.getElementById('mcpPanel');
@@ -140,11 +140,14 @@ document.getElementById('mAdd').onclick=async()=>{
  if(r.ok){document.getElementById('mName').value='';document.getElementById('mCmd').value='';document.getElementById('mUrl').value='';document.getElementById('mEnv').value=''}
  refresh()};
 
+let curAbort=null;
+document.getElementById('stopBtn').onclick=()=>{if(curAbort){curAbort.abort();add('dim','■ stopped')}};
 document.getElementById('f').onsubmit=async e=>{e.preventDefault();const q=document.getElementById('q');const t=q.value.trim();if(!t)return;q.value='';add('you','you: '+t);
  const ai=document.createElement('div');ai.className='ai';ai.textContent='';log.appendChild(ai);log.scrollTop=log.scrollHeight;
  const tool=d=>{const el=document.createElement('div');el.className='dim';el.textContent=d;log.insertBefore(el,ai);log.scrollTop=log.scrollHeight};
+ curAbort=new AbortController();document.getElementById('stopBtn').style.display='';document.getElementById('sendBtn').disabled=true;
  try{
-  const r=await fetch('/api/message',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t,stream:true})});
+  const r=await fetch('/api/message',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t,stream:true}),signal:curAbort.signal});
   if(!r.ok||!r.body){ai.remove();add('err','request failed: HTTP '+r.status);return}
   const rd=r.body.getReader(),dec=new TextDecoder();let buf='',reply='';
   for(;;){const{done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
@@ -158,7 +161,8 @@ document.getElementById('f').onsubmit=async e=>{e.preventDefault();const q=docum
     else if(ev==='error'){ai.className='err';ai.textContent='error: '+(d.error||'unknown')}
     else if(ev==='done'){if(d.reply&&!reply){ai.textContent=d.reply}else if(!reply){ai.textContent='(empty)'}ai.className='ai'}
    }}
- }catch(err){ai.remove();add('err','request failed: '+err)}
+ }catch(err){if(curAbort&&curAbort.signal.aborted){if(!ai.textContent)ai.textContent='(stopped)';ai.className='dim'}else{ai.remove();add('err','request failed: '+err)}}
+ finally{curAbort=null;document.getElementById('stopBtn').style.display='none';document.getElementById('sendBtn').disabled=false}
  poll()};
 fetch('/api/ping').then(()=>st.textContent='ready').catch(()=>st.textContent='offline');
 setInterval(poll,1500);poll();refresh();
@@ -228,6 +232,8 @@ export function startWebServer(opts: {
         const { text, stream } = await readBody();
         if (!text?.trim()) return json(400, { error: "empty message" });
         if (stream) {
+          const ac = new AbortController();
+          res.on("close", () => { if (!res.writableFinished) ac.abort(); });
           res.writeHead(200, {
             "content-type": "text/event-stream; charset=utf-8",
             "cache-control": "no-cache",
@@ -239,8 +245,8 @@ export function startWebServer(opts: {
           };
           emit("start", { ts: Date.now() });
           try {
-            const r = await opts.onMessage(String(text).slice(0, 20_000), emit);
-            emit(r.error ? "error" : "done", r.error ? { error: r.error } : { reply: r.reply });
+            const r = await opts.onMessage(String(text).slice(0, 20_000), emit, ac.signal);
+            emit(r.error ? "error" : "done", r.error ? { error: r.error } : { reply: r.reply, aborted: ac.signal.aborted });
           } catch (e) {
             emit("error", { error: e instanceof Error ? e.message : String(e) });
           }
