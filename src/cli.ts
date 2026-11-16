@@ -9,6 +9,7 @@ import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings, setLastUsedProvider, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
+import { VERSION, pendingUpdate } from "./update.ts";
 import { compactHistory } from "./compact.ts";
 import { MarkdownRenderer } from "./markdown.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
@@ -929,7 +930,13 @@ async function main(): Promise<void> {
 
   const { opts, positional, command } = parseArgs(argv);
   if (command === "help") { usage(); return; }
-  if (command === "version") { console.log("brosai 0.2.0"); return; }
+  if (command === "version") { console.log(`brosai ${VERSION}`); return; }
+  if (argv[0] === "update") {
+    const { selfUpdate } = await import("./update.ts");
+    try { console.log(await selfUpdate()); }
+    catch (e) { console.error(C.red(`update failed: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
+    return;
+  }
 
   // First-run guide: no providers configured and nothing overridden -> wizard
   if (!Object.keys(readConfig().providers).length && !opts.provider && !opts.apiKey && process.stdin.isTTY) {
@@ -984,6 +991,9 @@ async function main(): Promise<void> {
     return;
   }
 
+  pendingUpdate().then((v) => {
+    if (v) console.log(C.yellow(`\nupdate available: v${v} — run 'brosai update'`));
+  }).catch(() => {});
   console.log(C.dim(`${C.bold("BrosAi")} ${provider.def.name}/${provider.model} mode=${opts.mode} cwd=${opts.cwd} - /help for commands`));
   try {
     await repl(session, opts);

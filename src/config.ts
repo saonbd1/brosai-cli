@@ -33,6 +33,7 @@ export interface BrosConfig {
   telegram?: { botToken?: string; chatId?: number; username?: string };
   usage?: { input: number; output: number; costUsd: number; updatedAt: string };
   mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> }>;
+  updateCheck?: { lastCheck: string; latest?: string };
 }
 
 export function emptyConfig(): BrosConfig {

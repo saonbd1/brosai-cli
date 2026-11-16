@@ -11,6 +11,7 @@ Personal CLI coding agent. Give it a task in plain English — it reads, writes,
 - **Safety** — workspace path sandbox, command approval prompts (`-y` to auto-approve), `0600` config files
 - **Telegram** — chat with the agent from your phone, approve commands with buttons, and let the agent message you when it finishes
 - **Cross-platform** — Linux/WSL binary + native Windows `.exe`
+- **Self-updating** — checks for new releases once a day; `brosai update` installs the latest binary
 
 ## Install on another PC
 
