@@ -10,6 +10,7 @@ import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvide
 import { readConfig, saveProviderSettings, setLastUsedProvider, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
 import { VERSION, pendingUpdate } from "./update.ts";
+import type { WebApproval } from "./web.ts";
 import { compactHistory } from "./compact.ts";
 import { MarkdownRenderer } from "./markdown.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
@@ -47,6 +48,7 @@ interface CliOpts {
   contextWindow: number;
   raw: boolean;
   images?: string[];
+  approveFn?: (cmd: string) => Promise<boolean>;
 }
 
 function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; command?: string } {
@@ -71,6 +73,7 @@ function parseArgs(argv: string[]): { opts: CliOpts; positional: string[]; comma
       case "--plan": opts.mode = "plan"; break;
       case "--context-window": opts.contextWindow = Number(next()) || opts.contextWindow; break;
       case "--raw": opts.raw = true; break;
+      case "--port": next(); break; // consumed by `brosai web`
       case "--image": case "-i": {
         try { opts.images = [...(opts.images ?? []), imageDataUrl(next())]; }
         catch (e) { console.error(C.red(String(e instanceof Error ? e.message : e))); process.exit(2); }
@@ -542,7 +545,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
     ctx: {
-      approve: opts.yes ? () => true : makeApprover(session.approveState),
+      approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)),
       todos: session.todos,
       subagent: async (sp: string, readOnly: boolean) => {
         const childDefs = readOnly
@@ -554,7 +557,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
           systemPrompt: readOnly ? SUBAGENT_EXPLORE_PROMPT : SUBAGENT_ACT_PROMPT,
           toolDefs: childDefs,
           maxSteps: 25,
-          ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
+          ctx: { approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)), todos: session.todos },
         });
         const cost = estimateCost(session.provider.def.id, session.provider.model, res.usage.input, res.usage.output);
         session.usage.input += res.usage.input;
@@ -976,6 +979,32 @@ async function main(): Promise<void> {
   }
   const ac = new AbortController();
   process.on("SIGINT", () => ac.abort());
+
+  if (argv[0] === "web") {
+    const pi = argv.indexOf("--port");
+    const port = Number(pi >= 0 ? argv[pi + 1] : 0) || Number(process.env.BROS_WEB_PORT) || 8420;
+    const { startWebServer, makeWebApprover } = await import("./web.ts");
+    const approvals: WebApproval[] = [];
+    opts.approveFn = makeWebApprover(approvals, { all: false });
+    const bridge = startWebServer({
+      port,
+      approvals,
+      onMessage: async (text) => {
+        try {
+          const reply = await runTurn(session, text, opts);
+          return { reply };
+        } catch (e) {
+          return { reply: "", error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    });
+    console.log(C.green(`BrosAi web UI → http://localhost:${port}  (${provider.def.name}/${provider.model}, cwd ${opts.cwd})`));
+    console.log(C.dim("Ctrl+C to stop. Approvals appear as buttons in the page."));
+    await new Promise<void>((r) => { process.on("SIGINT", () => r()); bridge.server.on("close", () => r()); });
+    bridge.close();
+    mcp.close();
+    return;
+  }
 
   const prompt = positional.join(" ");
   if (prompt) {

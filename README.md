@@ -147,6 +147,7 @@ brosai allow add "npm test*"        # always approve matching commands
 brosai allow rm "npm test*"         # remove a pattern
 brosai --plan "..."                 # plan mode: read-only, outputs a plan only
 brosai --mode plan                  # same, or --mode act to switch back
+brosai web [--port 8420]            # localhost web chat UI (approvals as buttons)
 ```
 
 Checkpoints use a hidden git repo under `~/.brosai/checkpoints/` — every turn snapshots the workspace first, so `brosai undo` can restore files and remove agent-created ones. Disable with `--no-checkpoint`. Read-only shell commands (`ls`, `cat`, `git status/diff/log`, …) never prompt for approval; everything else asks `[y/n/a]` where `a` approves the rest of the session.
@@ -230,6 +231,8 @@ src/
 - [x] `/diff` and `brosai diff` — changes since last checkpoint
 - [x] Approval UX — read-only auto-approve, `brosai allow` wildcard allowlist, `[y/n/a]` session approve-all
 - [x] Telegram — bot mode with inline-button approvals, pairing, `telegram_send` / `telegram_send_file` tools
+- [x] Web UI — `brosai web` serves a localhost chat page with approval buttons
+- [x] Self-update — `brosai update` + daily release check
 - [x] Token/cost tracking — pricing table, session + lifetime estimates in `/cost` and run footer
 
 ### Planned / Not done
