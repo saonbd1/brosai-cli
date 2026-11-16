@@ -46,7 +46,12 @@ export async function pendingUpdate(): Promise<string | null> {
     return cfg.updateCheck.latest && cmpVer(cfg.updateCheck.latest, VERSION) > 0 ? cfg.updateCheck.latest : null;
   }
   const latest = await fetchLatestTag();
-  cfg.updateCheck = { lastCheck: new Date(now).toISOString(), latest: latest ?? undefined };
+  if (latest == null) {
+    // Don't cache failures for 24h — retry on next launch instead.
+    cfg.updateCheck = { lastCheck: new Date(now - CHECK_INTERVAL_MS + 60_000).toISOString(), latest: cfg.updateCheck?.latest };
+  } else {
+    cfg.updateCheck = { lastCheck: new Date(now).toISOString(), latest };
+  }
   writeConfig(cfg);
   return latest && cmpVer(latest, VERSION) > 0 ? latest : null;
 }
