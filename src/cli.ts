@@ -6,7 +6,7 @@ import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
 import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
 import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from "./mcp.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
-import { readConfig, saveProviderSettings, recordUsage, lifetimeUsage } from "./config.ts";
+import { readConfig, saveProviderSettings, setLastUsedProvider, recordUsage, lifetimeUsage } from "./config.ts";
 import { estimateCost, formatCost } from "./pricing.ts";
 import { compactHistory } from "./compact.ts";
 import { MarkdownRenderer } from "./markdown.ts";
@@ -124,7 +124,7 @@ ${C.bold("Flags:")}
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
 
-${C.bold("REPL commands:")} /status  /provider  /model  /mode  /allow  /sessions  /cost  /diff  /undo  /checkpoints  /clear  /help  /exit`);
+${C.bold("REPL commands:")} /status  /provider(s)  /model  /mode  /allow  /sessions  /cost  /diff  /undo  /checkpoints  /clear  /help  /exit`);
 }
 
 function keyStatus(providerId: string): string {
@@ -442,7 +442,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts): Promise
   return last?.role === "assistant" ? (last.content ?? "") : "";
 }
 
-const SLASH_COMMANDS = ["/provider", "/model", "/mode", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
+const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
 
 function makeCompleter(getProviderId: () => string) {
   return (line: string): [string[], string] => {
@@ -454,7 +454,7 @@ function makeCompleter(getProviderId: () => string) {
     if (parts.length === 1 || (parts.length === 2 && line.endsWith(" "))) {
       candidates = SLASH_COMMANDS;
     } else {
-      if (head === "/provider") candidates = PROVIDERS.map((p) => p.id);
+      if (head === "/provider" || head === "/providers") candidates = PROVIDERS.map((p) => p.id);
       else if (head === "/model") candidates = getProvider(getProviderId())?.models ?? [];
       else if (head === "/mode") candidates = ["act", "plan"];
       else if (head === "/undo") candidates = ["1", "2", "3"];
@@ -468,10 +468,103 @@ function makeCompleter(getProviderId: () => string) {
 async function repl(session: Session, opts: CliOpts): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> "), completer: makeCompleter(() => session.provider.def.id) });
   const reprompt = () => { if (!rl.closed) rl.prompt(); };
+
+  type Picker = { title: string; options: string[]; allowCustom?: boolean; onPick: (sel: string) => void | Promise<void> };
+  let picker: Picker | null = null;
+  let textAsk: { prompt: string; onAnswer: (v: string) => void | Promise<void> } | null = null;
+
+  const applyProvider = async (id: string) => {
+    try {
+      session.provider = resolveProvider({ providerId: id });
+      setLastUsedProvider(id);
+      console.log(C.green(`provider -> ${id} (${session.provider.def.name}, model ${session.provider.model})`));
+    } catch (e) { console.log(C.red(String(e instanceof Error ? e.message : e))); }
+  };
+
+  const showModelPicker = async (providerId: string, then?: (m: string) => void | Promise<void>) => {
+    const def = getProvider(providerId);
+    const stored = readConfig().providers[providerId]?.settings;
+    const baseUrl = stored?.baseUrl ?? def?.baseUrl;
+    const fetched = baseUrl ? await fetchModelList(baseUrl) : [];
+    const options = [...new Set([...(def?.models ?? []), ...fetched])];
+    const cur = session.provider.def.id === providerId ? session.provider.model : stored?.model;
+    console.log(C.bold(`\n${def?.name ?? providerId} — select model${cur ? ` (current: ${cur})` : ""}:`));
+    options.slice(0, 30).forEach((m, i) => console.log(`  ${i + 1}) ${m}`));
+    if (options.length > 30) console.log(C.dim(`  ... and ${options.length - 30} more`));
+    if (!options.length) console.log(C.dim("  (none discovered — type a model name)"));
+    picker = {
+      title: "model",
+      options,
+      allowCustom: true,
+      onPick: async (m) => {
+        const merged = { ...readConfig().providers[providerId]?.settings, model: m };
+        saveProviderSettings(providerId, merged, { setLastUsed: false });
+        if (session.provider.def.id === providerId) session.provider = { ...session.provider, model: m };
+        console.log(C.green(`model -> ${m}`));
+        if (then) await then(m);
+      },
+    };
+  };
+
+  const askText = (prompt: string, onAnswer: (v: string) => void | Promise<void>) => {
+    console.log(C.bold(`? ${prompt}`));
+    textAsk = { prompt, onAnswer };
+  };
+
+  const configureCustom = async () => {
+    const stored = readConfig().providers.custom?.settings;
+    askText(`Base URL [${stored?.baseUrl ?? "http://localhost:8000/v1"}]: `, async (v) => {
+      const baseUrl = (v.trim() || stored?.baseUrl || "http://localhost:8000/v1").replace(/\/+$/, "");
+      saveProviderSettings("custom", { ...stored, baseUrl }, { setLastUsed: false });
+      const pickModel = () => showModelPicker("custom", () => applyProvider("custom"));
+      if (!stored?.apiKey && !process.env.BROSAI_API_KEY) {
+        askText("API key (leave empty if the endpoint needs none): ", async (k) => {
+          if (k.trim()) { storeKey("custom", k.trim()); console.log(C.green("key saved")); }
+          await pickModel();
+        });
+      } else await pickModel();
+    });
+  };
+
+  const selectProvider = async (id: string) => {
+    if (!getProvider(id)) { console.log(C.red(`unknown provider: ${id}`)); return; }
+    if (id === "custom") {
+      const stored = readConfig().providers.custom?.settings;
+      if (!stored?.baseUrl || !stored?.model) { await configureCustom(); return; }
+    }
+    await applyProvider(id);
+  };
+
+  const showProviderPicker = () => {
+    const cur = session.provider.def.id;
+    console.log(C.bold("\nProviders:"));
+    PROVIDERS.forEach((p, i) => {
+      const mark = p.id === cur ? C.cyan(" <- current") : "";
+      console.log(`  ${i + 1}) ${p.id.padEnd(12)} ${p.name.padEnd(26)} key: ${keyStatus(p.id)}${mark}`);
+    });
+    console.log(C.dim("Enter a number or provider id. 'custom' = any OpenAI-compatible endpoint."));
+    picker = { title: "provider", options: PROVIDERS.map((p) => p.id), allowCustom: false, onPick: selectProvider };
+  };
+
   reprompt();
   for await (const line of rl) {
     const input = line.trim();
     if (!input) { reprompt(); continue; }
+    if (textAsk) {
+      const t = textAsk; textAsk = null;
+      await t.onAnswer(input);
+      reprompt(); continue;
+    }
+    if (picker) {
+      const p = picker; picker = null;
+      const n = Number(input);
+      let sel = "";
+      if (Number.isInteger(n) && n >= 1 && n <= p.options.length) sel = p.options[n - 1];
+      else sel = p.options.find((o) => o === input || o.startsWith(input)) ?? (p.allowCustom ? input : "");
+      if (sel) await p.onPick(sel);
+      else console.log(C.dim("(cancelled)"));
+      reprompt(); continue;
+    }
     if (input === "/exit" || input === "/quit") break;
     if (input === "/clear") { session.history = []; console.log(C.dim("history cleared")); reprompt(); continue; }
     if (input === "/cost") {
@@ -480,20 +573,17 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       if (life) console.log(`lifetime: tokens in=${life.input} out=${life.output} est=${formatCost(life.costUsd)}`);
       reprompt(); continue;
     }
-    if (input === "/provider" || input.startsWith("/provider ")) {
+    if (input === "/provider" || input === "/providers" || input.startsWith("/provider ") || input.startsWith("/providers ")) {
       const id = input.split(/\s+/)[1];
-      if (!id) { console.log("providers:", PROVIDERS.map((p) => p.id).join(", ")); reprompt(); continue; }
-      try {
-        session.provider = resolveProvider({ providerId: id });
-        console.log(C.green(`provider -> ${id} (${session.provider.model})`));
-      } catch (e) { console.log(C.red(String(e instanceof Error ? e.message : e))); }
+      if (!id) { showProviderPicker(); reprompt(); continue; }
+      await selectProvider(id);
       reprompt(); continue;
     }
     if (input === "/model" || input.startsWith("/model ")) {
       const m = input.split(/\s+/)[1];
-      if (!m) { console.log("current:", session.provider.model); reprompt(); continue; }
+      if (!m) { await showModelPicker(session.provider.def.id); reprompt(); continue; }
       session.provider = { ...session.provider, model: m };
-      saveProviderSettings(session.provider.def.id, { model: m }, { setLastUsed: false });
+      saveProviderSettings(session.provider.def.id, { ...readConfig().providers[session.provider.def.id]?.settings, model: m }, { setLastUsed: false });
       console.log(C.green(`model -> ${m}`));
       reprompt(); continue;
     }

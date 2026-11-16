@@ -77,6 +77,12 @@ export function recordUsage(input: number, output: number, costUsd: number | nul
   writeConfig(cfg);
 }
 
+export function setLastUsedProvider(providerId: string): void {
+  const cfg = readConfig();
+  cfg.lastUsedProvider = providerId;
+  writeConfig(cfg);
+}
+
 export function lifetimeUsage(): { input: number; output: number; costUsd: number } | null {
   return readConfig().usage ?? null;
 }
