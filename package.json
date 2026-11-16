@@ -1,6 +1,6 @@
 {
   "name": "brosai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "BrosAi — personal CLI coding agent",
   "type": "module",
   "bin": { "brosai": "./src/cli.ts" },

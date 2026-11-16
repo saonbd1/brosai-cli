@@ -239,6 +239,80 @@ async function githubAuthFlow(): Promise<void> {
   }
 }
 
+async function fetchModelList(baseUrl: string): Promise<string[]> {
+  try {
+    const root = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const urls = [`${baseUrl.replace(/\/+$/, "")}/models`, `${root}/api/tags`];
+    for (const u of urls) {
+      const res = await fetch(u, { signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) continue;
+      const d: any = await res.json();
+      const names = (d.data ?? d.models ?? []).map((m: any) => String(m.id ?? m.name ?? "")).filter(Boolean);
+      if (names.length) return names;
+    }
+  } catch {}
+  return [];
+}
+
+async function pickFromList(title: string, items: string[], allowCustom = true): Promise<string> {
+  if (items.length) {
+    console.log(C.bold(`\n${title}:`));
+    items.slice(0, 20).forEach((it, i) => console.log(`  ${i + 1}) ${it}`));
+    const ans = await ask(`Choose [1-${Math.min(items.length, 20)}${allowCustom ? " or type a model name" : ""}]: `);
+    const n = Number(ans);
+    if (n >= 1 && n <= items.length) return items[n - 1];
+    if (ans.trim()) return ans.trim();
+  }
+  return (await ask(`${title} (model name): `)).trim();
+}
+
+async function setupCmd(): Promise<void> {
+  console.log(C.bold("\nBrosAi setup — connect a model provider\n"));
+  const list = PROVIDERS.filter((p) => p.id !== "custom");
+  list.forEach((p, i) => console.log(`  ${i + 1}) ${p.name}${p.noKey ? " (no key needed)" : ""}`));
+  console.log(`  ${list.length + 1}) Custom OpenAI-compatible endpoint`);
+  const sel = await ask(`Choose [1-${list.length + 1}]: `);
+  const n = Number(sel);
+  const def = n >= 1 && n <= list.length ? list[n - 1] : getProvider("custom")!;
+
+  let apiKey: string | undefined;
+  let baseUrl = def.baseUrl;
+  let model: string | undefined;
+
+  if (def.id === "ollama") {
+    baseUrl = (await ask(`Ollama server URL [${def.baseUrl}]: `)).trim() || def.baseUrl;
+  } else if (def.id === "custom") {
+    baseUrl = (await ask("Base URL (e.g. http://host:11434/v1 or http://localhost:8000/v1): ")).trim();
+    if (!baseUrl) { console.error(C.red("Base URL required")); process.exit(2); }
+    apiKey = (await ask("API key (leave empty if none): ")).trim() || undefined;
+  } else {
+    apiKey = await promptHidden(`API key for ${def.name}: `);
+    if (!apiKey?.trim()) { console.error(C.red("Empty key")); process.exit(2); }
+    apiKey = apiKey.trim();
+  }
+
+  const discovered = await fetchModelList(baseUrl!);
+  const fallbacks = def.models ?? [];
+  const choices = [...new Set([...discovered, ...fallbacks])];
+  if (choices.length) model = await pickFromList("Select model", choices);
+  else model = (await ask("Model name: ")).trim();
+  if (!model) { console.error(C.red("Model required")); process.exit(2); }
+
+  saveProviderSettings(def.id, { apiKey, model, baseUrl }, { setLastUsed: true });
+  console.log(C.dim(`\nSaved ${def.id}/${model} — testing connection...`));
+
+  try {
+    const p = resolveProvider({ providerId: def.id });
+    const { chatOnce } = await import("./providers/index.ts");
+    const r = await chatOnce(p, { messages: [{ role: "user", content: "Reply with exactly: OK" }], tools: [], maxTokens: 16 });
+    console.log(C.green(`Connected! Model says: ${(r.content ?? "").trim().slice(0, 80) || "(empty)"}`));
+    console.log(C.dim(`Default provider is now ${def.id}. Run 'brosai' to start.`));
+  } catch (e) {
+    console.log(C.yellow(`Saved, but test failed: ${e instanceof Error ? e.message : String(e)}`));
+    console.log(C.dim("You can still try: brosai -p " + def.id + ' "your task"'));
+  }
+}
+
 async function authCmd(providerId: string | undefined, key: string | undefined): Promise<void> {
   if (providerId === "github" && !key) { await githubAuthFlow(); return; }
   if (!providerId) {
@@ -497,6 +571,7 @@ async function main(): Promise<void> {
   if (argv[0] === "auth") { await authCmd(argv[1], argv[2]); return; }
   if (argv[0] === "providers") { providersCmd(); return; }
   if (argv[0] === "models" || argv[0] === "ollama") { await modelsCmd(argv.slice(1)); return; }
+  if (argv[0] === "setup") { await setupCmd(); return; }
   if (argv[0] === "sessions") {
     const list = listSessions();
     if (!list.length) console.log("No saved sessions.");
@@ -579,7 +654,12 @@ async function main(): Promise<void> {
 
   const { opts, positional, command } = parseArgs(argv);
   if (command === "help") { usage(); return; }
-  if (command === "version") { console.log("brosai 0.1.0"); return; }
+  if (command === "version") { console.log("brosai 0.2.0"); return; }
+
+  // First-run guide: no providers configured and nothing overridden -> wizard
+  if (!Object.keys(readConfig().providers).length && !opts.provider && !opts.apiKey && process.stdin.isTTY) {
+    await setupCmd();
+  }
 
   let provider: ResolvedProvider;
   try {
