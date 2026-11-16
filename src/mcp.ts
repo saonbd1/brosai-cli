@@ -3,9 +3,13 @@ import { readConfig, writeConfig } from "./config.ts";
 import type { ToolDef, ToolResult } from "./tools/index.ts";
 
 export interface McpServerConfig {
-  command: string;
+  /** stdio transport */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Streamable HTTP transport */
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 interface JsonRpcRequest {
@@ -35,6 +39,7 @@ class McpClient {
   }
 
   async start(): Promise<void> {
+    if (!this.cfg.command) throw new Error(`MCP server "${this.name}" has no command`);
     // env values of the form "$(cmd)" are evaluated at spawn time (e.g. "$(gh auth token)")
     const resolvedEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(this.cfg.env ?? {})) {
@@ -150,6 +155,105 @@ class McpClient {
   }
 }
 
+/* ---------------- Streamable HTTP transport ---------------- */
+
+class McpHttpClient {
+  private nextId = 1;
+  private sessionId = "";
+  readonly name: string;
+  private cfg: McpServerConfig;
+
+  constructor(name: string, cfg: McpServerConfig) {
+    this.name = name;
+    this.cfg = cfg;
+  }
+
+  private headers(extra?: Record<string, string>): Record<string, string> {
+    return {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+      ...(this.cfg.headers ?? {}),
+      ...extra,
+    };
+  }
+
+  /** POST a JSON-RPC message; returns the response message matching `id` (or null for notifications). */
+  private async post(msg: object, expectReply: boolean, timeoutMs = CALL_TIMEOUT): Promise<any> {
+    const res = await fetch(this.cfg.url!, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(msg),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const sid = res.headers.get("mcp-session-id");
+    if (sid) this.sessionId = sid;
+    if (res.status === 202 || res.status === 204) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const ctype = res.headers.get("content-type") ?? "";
+    if (ctype.includes("text/event-stream")) {
+      const text = await res.text();
+      // SSE: collect JSON-RPC messages from data: lines; return the one matching msg.id
+      const wantId = (msg as any).id;
+      for (const block of text.split("\n\n")) {
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          try {
+            const m = JSON.parse(line.slice(5).trim());
+            if (!expectReply || m.id === wantId) return m;
+          } catch {}
+        }
+      }
+      return null;
+    }
+    return res.json();
+  }
+
+  async start(): Promise<void> {
+    if (!this.cfg.url) throw new Error(`MCP server "${this.name}" has no url`);
+    const init = await this.post({
+      jsonrpc: "2.0", id: this.nextId++, method: "initialize",
+      params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "brosai", version: "0.1.0" } },
+    }, true, START_TIMEOUT);
+    if (init?.error) throw new Error(init.error.message ?? "initialize failed");
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, false, START_TIMEOUT);
+  }
+
+  private request(method: string, params?: unknown, timeoutMs = CALL_TIMEOUT): Promise<any> {
+    const id = this.nextId++;
+    return this.post({ jsonrpc: "2.0", id, method, params }, true, timeoutMs).then((m) => {
+      if (m?.error) throw new Error(m.error.message ?? JSON.stringify(m.error));
+      return m?.result;
+    });
+  }
+
+  async listTools(): Promise<{ name: string; description?: string; inputSchema?: any }[]> {
+    const res = await this.request("tools/list");
+    return Array.isArray(res?.tools) ? res.tools : [];
+  }
+
+  async callTool(name: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
+    const res = await this.request("tools/call", { name, arguments: args });
+    const parts: string[] = [];
+    if (Array.isArray(res?.content)) {
+      for (const c of res.content) {
+        if (c?.type === "text" && typeof c.text === "string") parts.push(c.text);
+        else if (c?.type === "resource" && c.resource?.text) parts.push(String(c.resource.text));
+        else parts.push(JSON.stringify(c));
+      }
+    }
+    if (res?.structuredContent != null) parts.push(JSON.stringify(res.structuredContent));
+    if (!parts.length && res != null) parts.push(JSON.stringify(res));
+    return { content: parts.join("\n") || "(empty result)", isError: Boolean(res?.isError) };
+  }
+
+  get stderr(): string { return ""; }
+  close(): void { if (this.sessionId) { /* best-effort terminate */ } }
+}
+
 function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
 }
@@ -166,12 +270,12 @@ export async function connectMcpServers(onWarn?: (msg: string) => void): Promise
   const names = Object.keys(cfg);
   if (!names.length) return { toolDefs: [], close: () => {}, servers: [] };
 
-  const clients: McpClient[] = [];
+  const clients: (McpClient | McpHttpClient)[] = [];
   const toolDefs: ToolDef[] = [];
   const connected: string[] = [];
 
   for (const name of names) {
-    const c = new McpClient(name, cfg[name]);
+    const c = cfg[name].url ? new McpHttpClient(name, cfg[name]) : new McpClient(name, cfg[name] as McpServerConfig & { command: string });
     try {
       await c.start();
       const tools = await c.listTools();

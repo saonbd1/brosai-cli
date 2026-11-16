@@ -780,6 +780,23 @@ async function main(): Promise<void> {
     if (sub === "add") {
       const name = argv[2];
       const rest = argv.slice(3);
+      const urlIdx = rest.indexOf("--url");
+      if (urlIdx >= 0) {
+        const url = rest[urlIdx + 1];
+        const headers: Record<string, string> = {};
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "--header" && rest[i + 1]) {
+            const kv = rest[i + 1]; const eq = kv.indexOf("=");
+            if (eq > 0) headers[kv.slice(0, eq)] = kv.slice(eq + 1);
+            i++;
+          }
+        }
+        if (!name || !url) { console.error(C.red("Usage: brosai mcp add <name> --url <http-url> [--header K=V]")); process.exit(2); }
+        addMcpServer(name, { url, headers: Object.keys(headers).length ? headers : undefined });
+        console.log(C.green(`MCP server "${name}" added (HTTP): ${url}`));
+        console.log(C.dim("It will connect on next brosai run."));
+        return;
+      }
       const sep = rest.indexOf("--");
       const env: Record<string, string> = {};
       let cmdParts: string[];

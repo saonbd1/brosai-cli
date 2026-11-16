@@ -15,7 +15,19 @@ Personal CLI coding agent. Give it a task in plain English — it reads, writes,
 
 BrosAi ships as a **single standalone binary** — no Node, Bun, or npm install needed.
 
-### Option A — Download a release (recommended)
+### Option A — Install script (recommended)
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/saonbd1/brosai-cli/master/install.ps1 | iex
+```
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/saonbd1/brosai-cli/master/install.sh | bash
+```
+
+### Option B — Download a release manually
 
 Download the binary for your platform from [Releases](../../releases) (or copy it manually):
 
@@ -30,7 +42,7 @@ chmod +x brosai-linux
 mv brosai-linux ~/bin/brosai   # or anywhere on PATH
 ```
 
-### Option B — Build from source
+### Option C — Build from source
 
 Requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`):
 
@@ -147,7 +159,9 @@ src/
 - [x] 12 core tools (file ops, shell, search, web_fetch, todo_write, apply_patch, move_file, connect_service)
 - [x] Subagents — `spawn_agent` tool delegates to a fresh-context child agent (read-only explore or full act mode, depth-capped)
 - [x] Vision input — `-i/--image` flag and `/image` REPL command (OpenAI-compatible + Anthropic providers)
-- [x] MCP client — stdio servers, `brosai mcp add/list/rm`, tools as `mcp__<server>__<tool>`
+- [x] MCP client — stdio **and Streamable HTTP** servers, `brosai mcp add/list/rm`, tools as `mcp__<server>__<tool>`
+  - stdio: `brosai mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /path`
+  - HTTP: `brosai mcp add remote --url https://mcp.example.com/mcp [--header Authorization=Bearer ...]`
 - [x] Context compaction — auto-summarizes history near the context limit
 - [x] Skills/rules loading — `AGENTS.md`, `CLAUDE.md`, `.brosai/rules/`, `.brosai/skills/*/SKILL.md`
 - [x] Interactive `/provider` + `/model` pickers, per-provider display names
@@ -169,5 +183,4 @@ src/
 
 ### Planned / Not done
 
-- [ ] MCP HTTP/SSE transport (remote servers; stdio only today)
-- [ ] Windows installer / PATH setup script
+- [ ] MCP resources/prompts (tools only today)
