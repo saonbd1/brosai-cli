@@ -956,7 +956,7 @@ async function main(): Promise<void> {
 
   const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [], pendingImages: [] };
 
-  const mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+  let mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
   if (mcp.servers.length) {
     const nTools = mcp.toolDefs.length;
     console.error(C.dim(`mcp: connected ${mcp.servers.join(", ")} (${nTools} tools)`));
@@ -986,9 +986,65 @@ async function main(): Promise<void> {
     const { startWebServer, makeWebApprover } = await import("./web.ts");
     const approvals: WebApproval[] = [];
     opts.approveFn = makeWebApprover(approvals, { all: false });
+    const reconnectMcp = async () => {
+      mcp.close();
+      mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+      session.mcpDefs = [...mcp.toolDefs, ...tgDefs];
+      console.error(C.dim(`mcp: reconnected ${mcp.servers.join(", ") || "(none)"} (${mcp.toolDefs.length} tools)`));
+    };
+    const control = {
+      getState: () => ({
+        mode: opts.mode,
+        provider: { id: provider.def.id, name: provider.def.name, model: provider.model },
+        providers: PROVIDERS.map((d) => {
+          const s = readConfig().providers[d.id]?.settings;
+          return { id: d.id, name: s?.name ?? d.name, model: s?.model ?? d.models[0], active: d.id === provider.def.id };
+        }),
+        mcp: Object.entries(listMcpServers()).map(([name, s]) => ({ name, command: s.command, args: s.args, url: s.url, headers: s.headers })),
+      }),
+      setMode: (mode: "act" | "plan") => { opts.mode = mode; },
+      setProvider: async (id: string) => {
+        try {
+          provider = resolveProvider({ providerId: id });
+          session.provider = provider;
+          setLastUsedProvider(id);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      addMcp: async (input: any) => {
+        const name = String(input?.name ?? "").trim();
+        if (!name) return { ok: false, error: "name required" };
+        try {
+          if (input.transport === "http") {
+            if (!input.url) return { ok: false, error: "url required" };
+            addMcpServer(name, { url: String(input.url), headers: input.headers });
+          } else {
+            if (!input.command) return { ok: false, error: "command required" };
+            addMcpServer(name, { command: String(input.command), args: input.args, env: input.env });
+          }
+          await reconnectMcp();
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      removeMcp: async (name: string) => {
+        try {
+          if (!listMcpServers()[String(name)]) return { ok: false, error: `no MCP server named "${name}"` };
+          removeMcpServer(String(name));
+          await reconnectMcp();
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    };
     const bridge = startWebServer({
       port,
       approvals,
+      control,
       onMessage: async (text) => {
         try {
           const reply = await runTurn(session, text, opts);
