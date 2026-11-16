@@ -30,6 +30,7 @@ export interface BrosConfig {
   lastUsedProvider?: string;
   providers: Record<string, { settings: ProviderSettings; updatedAt: string }>;
   allowedCommands?: string[];
+  telegram?: { botToken?: string; chatId?: number; username?: string };
   usage?: { input: number; output: number; costUsd: number; updatedAt: string };
   mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> }>;
 }

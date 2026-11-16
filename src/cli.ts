@@ -15,6 +15,8 @@ import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
 import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedCommand, allowedCommands } from "./allow.ts";
 import type { ChatMessage } from "./providers/index.ts";
+import type { SessionState } from "./runtime.ts";
+import { telegramToolDefs, runTelegramBot, pairChat, saveTelegramConfig, clearTelegramConfig, telegramSettings, verifyToken, sendText } from "./telegram.ts";
 
 const PLAIN = !process.stdout.isTTY || Boolean(process.env.NO_COLOR);
 const C = PLAIN
@@ -142,6 +144,9 @@ ${C.bold("Flags:")}
   brosai models          List Ollama models on the configured server
   brosai models use <m>  Select an Ollama model (sets ollama as provider)
   brosai models url <u>  Set Ollama server URL (e.g. http://vm-ip:11434)
+  brosai telegram setup [token]   Connect a Telegram bot to this machine (one-time pairing)
+  brosai telegram        Chat with the agent from Telegram (bot mode; approvals via buttons)
+  brosai telegram status|test|logout
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
@@ -347,6 +352,80 @@ async function authCmd(providerId: string | undefined, key: string | undefined):
   if (!apiKey?.trim()) { console.error(C.red("Empty key")); process.exit(2); }
   storeKey(providerId, apiKey.trim());
   console.log(C.green(`Saved key for ${providerId} -> ~/.brosai/config.json (0600)`));
+}
+
+async function telegramCmd(args: string[]): Promise<void> {
+  const { opts, positional } = parseArgs(args);
+  const sub = positional[0] ?? "start";
+
+  if (sub === "setup") {
+    let token = (positional[1] ?? process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
+    if (!token) {
+      if (!process.stdin.isTTY) { console.error(C.red("No token. Usage: brosai telegram setup <bot-token>")); process.exit(2); }
+      console.log("1. In Telegram open @BotFather and send /newbot\n2. Copy the token it gives you\n");
+      token = (await promptHidden("Bot token (hidden): ")).trim();
+    }
+    if (!token) { console.error(C.red("Empty token")); process.exit(2); }
+    let me;
+    try { me = await verifyToken(token); }
+    catch (e) { console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
+    console.log(C.green(`bot found: @${me.username}`));
+    let paired;
+    try {
+      paired = await pairChat(token, (code) => {
+        console.log(`\nNow open https://t.me/${me.username} in Telegram and send this message:\n\n  ${C.bold(`/start ${code}`)}\n`);
+        console.log(C.dim("Waiting up to 5 minutes (Ctrl+C to cancel)..."));
+      });
+    } catch (e) { console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
+    saveTelegramConfig({ botToken: token, chatId: paired.chatId, username: me.username });
+    await sendText({ token }, paired.chatId, "BrosAi is connected. Run `brosai telegram` on your computer to chat with the agent from here.").catch(() => {});
+    console.log(C.green(`paired with ${paired.name} (chat ${paired.chatId}). Saved to config (0600).`));
+    console.log(C.dim("Agent tools telegram_send / telegram_send_file are now enabled. Start bot mode with: brosai telegram"));
+    return;
+  }
+
+  if (sub === "status") {
+    const s = telegramSettings();
+    if (!s) { console.log("Telegram: not configured. Run: brosai telegram setup"); return; }
+    console.log(`Telegram: token ...${s.token.slice(-4)}  chat: ${s.chatId ?? "not paired"}`);
+    return;
+  }
+  if (sub === "logout") { clearTelegramConfig(); console.log(C.green("Telegram config removed (revoke the token in @BotFather to be thorough).")); return; }
+  if (sub === "test") {
+    const s = telegramSettings();
+    if (!s?.chatId) { console.error(C.red("Not set up. Run: brosai telegram setup")); process.exit(1); }
+    await sendText(s, s.chatId, "Test message from brosai").then(() => console.log(C.green("sent"))).catch((e) => { console.error(C.red(e.message)); process.exit(1); });
+    return;
+  }
+  if (sub !== "start") { console.error(C.red(`Unknown telegram command: ${sub}`)); process.exit(2); }
+
+  const s = telegramSettings();
+  if (!s?.chatId) { console.error(C.red("Telegram is not set up. Run: brosai telegram setup")); process.exit(1); }
+  let provider: ResolvedProvider;
+  try { provider = resolveProvider({ providerId: opts.provider, model: opts.model, baseUrl: opts.baseUrl, apiKey: opts.apiKey }); }
+  catch (e) { console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
+  const mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+  const session: SessionState = {
+    provider, cwd: opts.cwd, mode: opts.mode, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0,
+    approveState: { all: false, approved: new Set() }, todos: [], mcpDefs: [...mcp.toolDefs, ...telegramToolDefs()],
+  };
+  const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
+  if (wantResume) {
+    const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
+    if (saved) { session.history = saved.history; session.sessionFile = opts.resume ?? listSessions()[0]?.file; console.log(C.dim(`resumed session (${saved.history.length} messages)`)); }
+  }
+  if (opts.yes) console.error(C.red("WARNING: --yes in Telegram mode lets anyone with access to your Telegram account run shell commands here without approval."));
+  const ac = new AbortController();
+  process.on("SIGINT", () => ac.abort());
+  console.log(C.dim(`${C.bold("BrosAi")} telegram bot - ${provider.def.name}/${provider.model} mode=${opts.mode} cwd=${opts.cwd} - Ctrl+C to stop`));
+  try {
+    await runTelegramBot({ session, yes: opts.yes, maxSteps: opts.maxSteps, contextWindow: opts.contextWindow, noCheckpoint: opts.noCheckpoint, log: (m) => console.log(C.dim(m)), signal: ac.signal });
+  } catch (e) {
+    console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`));
+    process.exitCode = 1;
+  } finally {
+    mcp.close();
+  }
 }
 
 let activeRepl: ReturnType<typeof createInterface> | null = null;
@@ -750,6 +829,7 @@ async function main(): Promise<void> {
   if (argv[0] === "providers") { providersCmd(); return; }
   if (argv[0] === "models" || argv[0] === "ollama") { await modelsCmd(argv.slice(1)); return; }
   if (argv[0] === "setup") { await setupCmd(); return; }
+  if (argv[0] === "telegram") { await telegramCmd(argv.slice(1)); return; }
   if (argv[0] === "sessions") {
     const list = listSessions();
     if (!list.length) console.log("No saved sessions.");
@@ -872,6 +952,8 @@ async function main(): Promise<void> {
     console.error(C.dim(`mcp: connected ${mcp.servers.join(", ")} (${nTools} tools)`));
     session.mcpDefs = mcp.toolDefs;
   }
+  const tgDefs = telegramToolDefs();
+  if (tgDefs.length) session.mcpDefs = [...(session.mcpDefs ?? []), ...tgDefs];
   process.on("exit", () => mcp.close());
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {

@@ -9,6 +9,7 @@ Personal CLI coding agent. Give it a task in plain English — it reads, writes,
 - **Streaming output** — tokens and tool calls render live in the terminal
 - **Sessions** — auto-saved history; `--continue` / `--resume` / `brosai sessions`
 - **Safety** — workspace path sandbox, command approval prompts (`-y` to auto-approve), `0600` config files
+- **Telegram** — chat with the agent from your phone, approve commands with buttons, and let the agent message you when it finishes
 - **Cross-platform** — Linux/WSL binary + native Windows `.exe`
 
 ## Install on another PC
@@ -84,6 +85,49 @@ brosai "your task"                            # runs on the local model
 Or per-run: `brosai -p ollama -m qwen2.5:7b-instruct --base-url http://192.168.1.10:11434/v1 "task"`.
 Env override: `BROSAI_OLLAMA_URL` / `OLLAMA_BASE_URL`. Note: the Ollama server must listen on a reachable interface (`OLLAMA_HOST=0.0.0.0:11434 ollama serve`) and small models may struggle with tool calling.
 
+## Telegram
+
+Control BrosAi from your phone, and let the agent ping you. Uses the plain Telegram Bot API — no extra dependencies.
+
+```bash
+brosai telegram setup        # 1) create a bot with @BotFather, paste the token (hidden input)
+                             # 2) send the printed  /start <code>  to your bot  -> pairs ONE private chat
+brosai telegram              # bot mode: runs on this machine, in the current directory
+brosai telegram status|test|logout
+```
+
+**In bot mode** send a normal message to give the agent a task (photos work if your model has vision). Commands that need approval arrive as a message with **Once / All session / Deny** buttons (read-only and allowlisted commands never ask; unanswered requests are denied after 5 min).
+
+| Command | |
+|---|---|
+| `/stop` | cancel the running task |
+| `/status` | provider, mode, usage |
+| `/mode act\|plan` | switch mode |
+| `/diff` · `/undo [n]` | changes since last checkpoint / roll back |
+| `/clear` | fresh conversation |
+
+Takes the usual flags: `brosai telegram -p anthropic --cwd ~/proj -c` (provider, workspace, resume).
+
+**Agent tools** (enabled once paired, in every mode of brosai): `telegram_send` (text) and `telegram_send_file` (workspace file ≤ 50 MB, always asks approval). Try: `brosai "run the test suite and telegram me the result"`.
+
+Security notes:
+- Only the paired private chat is obeyed; everything else is ignored. Pairing needs a one-time 8-character code shown on your terminal.
+- Messages sent while the bot was offline are never replayed.
+- The bot token lives in `~/.brosai/config.json` (0600) or `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`. If it leaks, revoke it in @BotFather.
+- Bot chats are **not** end-to-end encrypted: prompts, answers and uploaded files pass through Telegram's servers.
+- `brosai telegram -y` removes approval prompts, so anyone who gets into your Telegram account could run shell commands on your machine. Don't use it unless you accept that.
+- Env: `BROSAI_TELEGRAM_API` overrides the API base URL (proxies, testing).
+
+## Tool performance notes
+
+- **Parallel reads:** when the model emits several read-only calls together (`read_file`, `glob`, `grep`, `list_dir`, `web_fetch`, read-only `spawn_agent`), they run concurrently. Anything that can change state still runs in order.
+- **`grep`** uses [ripgrep](https://github.com/BurntSushi/ripgrep) if `rg` is on your PATH (much faster on big repos); otherwise a built-in engine that skips binaries and gitignored files. Regex syntax `rg` rejects (e.g. lookahead) falls back automatically. Options: `ignore_case`, `context`, `files_only`.
+- **`glob` / `grep`** list files with `git ls-files` (respects `.gitignore`, includes dotfiles) and fall back to a plain walk outside git repos. A pattern without `/` (e.g. `*.ts`) matches file names at any depth.
+- **`read_file`** streams only the requested lines (2000 per call, then a "continue with offset=N" hint), rejects binary files, and truncates absurdly long lines.
+- **`run_command`** closes stdin, kills the whole process group on timeout or Ctrl+C, keeps the head and tail of huge output, and no longer waits on leftover background processes. The login-shell `PATH` is resolved once per session instead of spawning a login shell per command. Set `BROSAI_LOGIN_SHELL=1` to restore the old per-command login shell (needed if you rely on other variables from your shell profile).
+- **`web_fetch`** reads at most 2 MB of a page.
+- Env: `BROSAI_NO_RG=1` disables the ripgrep path.
+
 ## Usage
 
 ```bash
@@ -142,6 +186,7 @@ src/
   config.ts       ~/.brosai config (0600, atomic writes)
   session.ts      session save/load (~/.brosai/sessions)
   prompt.ts       system prompt
+  telegram.ts     Telegram bot mode, pairing, telegram_* tools
 ```
 
 ## Security notes
@@ -179,6 +224,7 @@ src/
 - [x] Plan mode (`--plan` / `--mode plan`, `/mode` in REPL — read-only tools only)
 - [x] `/diff` and `brosai diff` — changes since last checkpoint
 - [x] Approval UX — read-only auto-approve, `brosai allow` wildcard allowlist, `[y/n/a]` session approve-all
+- [x] Telegram — bot mode with inline-button approvals, pairing, `telegram_send` / `telegram_send_file` tools
 - [x] Token/cost tracking — pricing table, session + lifetime estimates in `/cost` and run footer
 
 ### Planned / Not done

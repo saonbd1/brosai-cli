@@ -10,7 +10,11 @@ mkdir -p "$INSTALL_DIR"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS" in
-  linux|darwin) ;;
+  linux) ;;
+  darwin)
+    echo "No prebuilt macOS binary is published yet (the release only has a Linux build)." >&2
+    echo "Build from source instead: bun build src/cli.ts --compile --outfile brosai" >&2
+    exit 1 ;;
   *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 

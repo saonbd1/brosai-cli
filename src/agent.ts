@@ -32,10 +32,19 @@ export interface AgentResult {
   cancelled: boolean;
 }
 
+const PARALLEL_SAFE = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch"]);
+
+/** True when a call cannot change workspace state and never prompts, so it may run alongside its neighbours. */
+function parallelSafe(tc: { name: string; arguments: string }): boolean {
+  if (PARALLEL_SAFE.has(tc.name)) return true;
+  if (tc.name === "spawn_agent") { try { return JSON.parse(tc.arguments || "{}").read_only === true; } catch { return false; } }
+  return false;
+}
+
 export async function runAgent(prompt: string, opts: AgentOptions): Promise<AgentResult> {
   const defs = opts.toolDefs ?? TOOLS;
   const tools = opts.tools ?? defs.map(({ name, description, parameters }) => ({ name, description, parameters }));
-  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx, toolDefs: defs };
+  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx, toolDefs: defs, signal: opts.signal };
   const maxSteps = opts.maxSteps ?? 100;
 
   const messages: ChatMessage[] = [
@@ -76,12 +85,32 @@ export async function runAgent(prompt: string, opts: AgentOptions): Promise<Agen
 
     if (toolCalls.length === 0) break;
 
-    for (const tc of toolCalls) {
-      opts.events?.onToolStart?.(tc.name, tc.arguments);
-      const result = await runTool(tc.name, tc.arguments, ctx);
-      opts.events?.onToolEnd?.(tc.name, result);
-      messages.push({ role: "tool", tool_call_id: tc.id, name: tc.name, content: result.output });
-      if (opts.signal?.aborted) { cancelled = true; break; }
+    // Read-only calls the model emitted together (e.g. 4x read_file, grep + glob) run concurrently;
+    // anything that can change state keeps strict order. Results are appended in the original order.
+    let i = 0;
+    while (i < toolCalls.length) {
+      // Every tool_call must get a tool message, even after Ctrl+C, or the saved history is invalid.
+      if (cancelled || opts.signal?.aborted) {
+        cancelled = true;
+        for (; i < toolCalls.length; i++) {
+          const tc = toolCalls[i];
+          messages.push({ role: "tool", tool_call_id: tc.id, name: tc.name, content: "Cancelled by user before this tool ran" });
+        }
+        break;
+      }
+      let j = i + 1;
+      if (parallelSafe(toolCalls[i])) while (j < toolCalls.length && parallelSafe(toolCalls[j])) j++;
+      const batch = toolCalls.slice(i, j);
+      for (const tc of batch) opts.events?.onToolStart?.(tc.name, tc.arguments);
+      const results = batch.length === 1
+        ? [await runTool(batch[0].name, batch[0].arguments, ctx)]
+        : await Promise.all(batch.map((tc) => runTool(tc.name, tc.arguments, ctx)));
+      batch.forEach((tc, k) => {
+        opts.events?.onToolEnd?.(tc.name, results[k]);
+        messages.push({ role: "tool", tool_call_id: tc.id, name: tc.name, content: results[k].output });
+      });
+      i = j;
+      if (opts.signal?.aborted) cancelled = true;
     }
     if (cancelled) break;
   }

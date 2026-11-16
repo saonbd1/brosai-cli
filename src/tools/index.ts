@@ -36,7 +36,7 @@ function clip(s: string): string {
   return s.slice(0, MAX_OUTPUT) + `\n…[truncated ${s.length - MAX_OUTPUT} chars]`;
 }
 
-function safePath(ctx: ToolContext, p: string): string {
+export function safePath(ctx: ToolContext, p: string): string {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ctx.cwd, p);
   const rel = relative(ctx.cwd, abs);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Path escapes workspace: ${p}`);
