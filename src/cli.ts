@@ -434,6 +434,10 @@ const PLAN_PROMPT = `${SYSTEM_PROMPT}
 
 PLAN MODE: You are in plan mode. You may ONLY use read_file, glob, and grep — no writes, edits, or commands. Investigate the codebase, then output a concrete step-by-step implementation plan. Do NOT make any changes. End your reply with the plan clearly formatted.`;
 
+const SUBAGENT_ACT_PROMPT = `${SYSTEM_PROMPT}\n\nYou are a sub-agent spawned by a parent agent. Complete the delegated task autonomously and report back concisely: what you did, key findings, files changed, and anything the parent must know. You cannot spawn further sub-agents.`;
+
+const SUBAGENT_EXPLORE_PROMPT = `You are a read-only exploration sub-agent. Investigate the workspace using read_file, glob, grep, and list_dir only — make NO changes. Report concise findings: relevant files, how things work, and answers to the delegated question.`;
+
 const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
 async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = []): Promise<string> {
@@ -457,7 +461,30 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     systemPrompt: basePrompt + todoContext + loadContextFiles(opts.cwd),
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
-    ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
+    ctx: {
+      approve: opts.yes ? () => true : makeApprover(session.approveState),
+      todos: session.todos,
+      subagent: async (sp: string, readOnly: boolean) => {
+        const childDefs = readOnly
+          ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name))
+          : TOOLS.filter((d) => d.name !== "spawn_agent");
+        const res = await runAgent(sp, {
+          provider: session.provider,
+          cwd: opts.cwd,
+          systemPrompt: readOnly ? SUBAGENT_EXPLORE_PROMPT : SUBAGENT_ACT_PROMPT,
+          toolDefs: childDefs,
+          maxSteps: 25,
+          ctx: { approve: opts.yes ? () => true : makeApprover(session.approveState), todos: session.todos },
+        });
+        const cost = estimateCost(session.provider.def.id, session.provider.model, res.usage.input, res.usage.output);
+        session.usage.input += res.usage.input;
+        session.usage.output += res.usage.output;
+        if (cost != null) session.costUsd = (session.costUsd ?? 0) + cost;
+        recordUsage(res.usage.input, res.usage.output, cost);
+        const last = res.messages.at(-1);
+        return last?.role === "assistant" ? (last.content ?? "") : "";
+      },
+    },
     events,
     images: images.length ? images : undefined,
   });

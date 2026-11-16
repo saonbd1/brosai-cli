@@ -144,7 +144,15 @@ src/
 ### Done
 
 - [x] Agent loop with streaming tool calls
-- [x] 11 core tools (file ops, shell, search, web_fetch, todo_write, apply_patch)
+- [x] 12 core tools (file ops, shell, search, web_fetch, todo_write, apply_patch, move_file, connect_service)
+- [x] Subagents — `spawn_agent` tool delegates to a fresh-context child agent (read-only explore or full act mode, depth-capped)
+- [x] Vision input — `-i/--image` flag and `/image` REPL command (OpenAI-compatible + Anthropic providers)
+- [x] MCP client — stdio servers, `brosai mcp add/list/rm`, tools as `mcp__<server>__<tool>`
+- [x] Context compaction — auto-summarizes history near the context limit
+- [x] Skills/rules loading — `AGENTS.md`, `CLAUDE.md`, `.brosai/rules/`, `.brosai/skills/*/SKILL.md`
+- [x] Interactive `/provider` + `/model` pickers, per-provider display names
+- [x] `connect_service` — OAuth device flow (e.g. `brosai "connect my github"`)
+- [x] Ollama/local model support — keyless provider, `brosai models` discovery
 - [x] Provider layer: OpenAI-compatible + Anthropic, retries
 - [x] Provider catalog (8 providers) + env/config key resolution
 - [x] Interactive REPL + one-shot mode + `--json`
@@ -161,9 +169,5 @@ src/
 
 ### Planned / Not done
 
-- [ ] MCP client (stdio + HTTP tool servers)
-- [ ] Subagents for parallel tasks
-- [ ] Context compaction near model limits
-- [ ] Skills/rules loading (`SKILL.md`, `.brosai/rules`)
-- [ ] More tools: `web_fetch`, `todo_write`, `apply_patch`
+- [ ] MCP HTTP/SSE transport (remote servers; stdio only today)
 - [ ] Windows installer / PATH setup script

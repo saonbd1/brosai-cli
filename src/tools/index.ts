@@ -20,6 +20,8 @@ export interface ToolContext {
   todos?: TodoItem[];
   /** When set, only these tool defs may execute (plan mode, MCP bridge). */
   toolDefs?: ToolDef[];
+  /** Spawn a child agent (fresh context). Injected by the CLI; absent in plan mode/children. */
+  subagent?: (prompt: string, readOnly: boolean) => Promise<string>;
 }
 
 export interface ToolResult {
@@ -381,6 +383,26 @@ export const TOOLS: ToolDef[] = [
       };
       walk(base, 0);
       return { ok: true, output: clip(hits.length ? hits.join("\n") : "No matches") };
+    },
+  },
+  {
+    name: "spawn_agent",
+    description: "Delegate a task to a sub-agent with fresh context. Use for parallelizable or self-contained subtasks (exploration, research, implementation). Returns the sub-agent's final report.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "Complete, self-contained instructions for the sub-agent" },
+        read_only: { type: "boolean", description: "If true, sub-agent gets read-only tools (explore/research). Default false." },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      if (!ctx.subagent) return { ok: false, output: "Sub-agents are not available here" };
+      const prompt = String(args.prompt ?? "").trim();
+      if (!prompt) return { ok: false, output: "spawn_agent requires a prompt" };
+      const out = await ctx.subagent(prompt, args.read_only === true);
+      return { ok: true, output: clip(out || "(sub-agent returned no output)") };
     },
   },
 ];
