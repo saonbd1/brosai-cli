@@ -327,12 +327,24 @@ async function authCmd(providerId: string | undefined, key: string | undefined):
   console.log(C.green(`Saved key for ${providerId} -> ~/.brosai/config.json (0600)`));
 }
 
+let activeRepl: ReturnType<typeof createInterface> | null = null;
+
 async function ask(question: string): Promise<string> {
   if (!process.stdin.isTTY) return "";
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ans = await new Promise<string>((r) => rl.question(question, r));
-  rl.close();
-  return ans.trim();
+  const stdin = process.stdin;
+  // Detach the REPL's keypress listener so keys aren't echoed/buffered twice.
+  const priorKeypress = stdin.listeners("keypress");
+  activeRepl?.pause();
+  const rl = createInterface({ input: stdin, output: process.stdout });
+  for (const l of priorKeypress) stdin.removeListener("keypress", l);
+  try {
+    return await new Promise<string>((r) => rl.question(question, r)).then((a) => a.trim());
+  } finally {
+    rl.close();
+    for (const l of priorKeypress) stdin.on("keypress", l);
+    activeRepl?.resume();
+    activeRepl?.prompt();
+  }
 }
 
 function makeApprover(state: { all: boolean; approved: Set<string> }) {
@@ -467,6 +479,7 @@ function makeCompleter(getProviderId: () => string) {
 
 async function repl(session: Session, opts: CliOpts): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: C.green("brosai> "), completer: makeCompleter(() => session.provider.def.id) });
+  activeRepl = rl;
   const reprompt = () => { if (!rl.closed) rl.prompt(); };
 
   type Picker = { title: string; options: string[]; allowCustom?: boolean; onPick: (sel: string) => void | Promise<void> };
@@ -660,6 +673,7 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
     reprompt();
   }
   rl.close();
+  if (activeRepl === rl) activeRepl = null;
 }
 
 async function main(): Promise<void> {
