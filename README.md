@@ -5,7 +5,7 @@ Personal CLI coding agent. Give it a task in plain English — it reads, writes,
 ## Features
 
 - **Agent loop** — tool calling until task completion (read/write/edit/run/glob/grep)
-- **Providers** — Anthropic, OpenAI, OpenRouter, Vercel AI Gateway, DeepSeek, Cerebras, Groq, custom OpenAI-compatible
+- **Providers** — Anthropic, OpenAI, OpenRouter, Vercel AI Gateway, DeepSeek, Cerebras, Groq, Ollama/local, custom OpenAI-compatible
 - **Streaming output** — tokens and tool calls render live in the terminal
 - **Sessions** — auto-saved history; `--continue` / `--resume` / `brosai sessions`
 - **Safety** — workspace path sandbox, command approval prompts (`-y` to auto-approve), `0600` config files
@@ -182,12 +182,16 @@ src/
   cli.ts          entry point, args, REPL, slash commands
   agent.ts        tool-call loop
   providers/      streaming clients (OpenAI-compatible, Anthropic)
-  tools/          read_file, write_file, edit_file, run_command, glob, grep
+  tools/          read_file, write_file, edit_file, run_command, glob, grep, apply_patch, spawn_agent, …
+  tools/fast.ts   perf helpers: ripgrep, git ls-files, streaming reads, shell runner
   secrets.ts      provider catalog + key resolution
   config.ts       ~/.brosai config (0600, atomic writes)
   session.ts      session save/load (~/.brosai/sessions)
   prompt.ts       system prompt
+  mcp.ts          MCP client (stdio + Streamable HTTP)
+  runtime.ts      shared agent-turn logic (CLI + Telegram)
   telegram.ts     Telegram bot mode, pairing, telegram_* tools
+  update.ts       release check + self-update
 ```
 
 ## Security notes
@@ -220,7 +224,7 @@ src/
 - [x] Command approval prompts, workspace sandbox
 - [x] Standalone binaries: Linux + Windows (Bun compile)
 - [x] Windows support: `cmd.exe` shell, `%USERPROFILE%` config
-- [x] Git repo + GitHub (private)
+- [x] Git repo + GitHub (public)
 - [x] Git checkpoints — shadow-repo snapshots before each turn, `brosai undo [n]`, `/undo`, `/checkpoints`, `--no-checkpoint`
 - [x] Plan mode (`--plan` / `--mode plan`, `/mode` in REPL — read-only tools only)
 - [x] `/diff` and `brosai diff` — changes since last checkpoint
