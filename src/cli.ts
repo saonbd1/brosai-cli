@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
-import { runAgent } from "./agent.ts";
+import { runAgent, type AgentEvents } from "./agent.ts";
 import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
 import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
 import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from "./mcp.ts";
@@ -523,7 +523,7 @@ const SUBAGENT_EXPLORE_PROMPT = `You are a read-only exploration sub-agent. Inve
 
 const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
-async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = []): Promise<string> {
+async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = [], eventsOverride?: AgentEvents): Promise<string> {
   const images = [...(opts.images ?? []), ...extraImages];
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
   if (opts.mode !== "plan" && session.history.length > 6) {
@@ -536,7 +536,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
   const allDefs = opts.mode === "plan" ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name)) : [...TOOLS, ...(session.mcpDefs ?? [])];
-  const events = makeEvents(session, opts.json, opts.raw);
+  const events = eventsOverride ?? makeEvents(session, opts.json, opts.raw);
   const result = await runAgent(prompt, {
     provider: session.provider,
     cwd: opts.cwd,
@@ -1045,9 +1045,21 @@ async function main(): Promise<void> {
       port,
       approvals,
       control,
-      onMessage: async (text) => {
+      onMessage: async (text, emit) => {
+        const events: AgentEvents | undefined = emit
+          ? {
+              onText: (d) => emit("text", { delta: d }),
+              onToolStart: (name, args) => {
+                let parsed: unknown = args;
+                try { parsed = JSON.parse(args); } catch {}
+                emit("tool_start", { name, args: parsed });
+              },
+              onToolEnd: (name, result) => emit("tool_end", { name, ok: result.ok, output: String(result.output ?? "").slice(0, 4000) }),
+              onUsage: (i, o) => emit("usage", { input: i, output: o }),
+            }
+          : undefined;
         try {
-          const reply = await runTurn(session, text, opts);
+          const reply = await runTurn(session, text, opts, [], events);
           return { reply };
         } catch (e) {
           return { reply: "", error: e instanceof Error ? e.message : String(e) };

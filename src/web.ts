@@ -39,11 +39,14 @@ export interface WebControl {
   removeMcp(name: string): Promise<{ ok: boolean; error?: string }>;
 }
 
+export type WebEmit = (type: string, data: unknown) => void;
+
 export interface WebBridge {
   server: Server;
   approvals: WebApproval[];
-  /** Called for each user message; returns the agent's reply text. */
-  onMessage: (text: string) => Promise<{ reply: string; error?: string }>;
+  /** Called for each user message; returns the agent's reply text.
+   *  When the request asks for streaming, `emit` sends live agent events. */
+  onMessage: (text: string, emit?: WebEmit) => Promise<{ reply: string; error?: string }>;
   close: () => void;
 }
 
@@ -137,9 +140,25 @@ document.getElementById('mAdd').onclick=async()=>{
  if(r.ok){document.getElementById('mName').value='';document.getElementById('mCmd').value='';document.getElementById('mUrl').value='';document.getElementById('mEnv').value=''}
  refresh()};
 
-document.getElementById('f').onsubmit=async e=>{e.preventDefault();const q=document.getElementById('q');const t=q.value.trim();if(!t)return;q.value='';add('you','you: '+t);add('dim','…thinking');
- try{const r=await j('/api/message',{text:t});
-  log.lastChild.remove();add(r.error?'err':'ai',(r.error?'error: ':'')+r.reply||'(empty)');}catch(err){log.lastChild.remove();add('err','request failed: '+err)}
+document.getElementById('f').onsubmit=async e=>{e.preventDefault();const q=document.getElementById('q');const t=q.value.trim();if(!t)return;q.value='';add('you','you: '+t);
+ const ai=document.createElement('div');ai.className='ai';ai.textContent='';log.appendChild(ai);log.scrollTop=log.scrollHeight;
+ const tool=d=>{const el=document.createElement('div');el.className='dim';el.textContent=d;log.insertBefore(el,ai);log.scrollTop=log.scrollHeight};
+ try{
+  const r=await fetch('/api/message',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t,stream:true})});
+  if(!r.ok||!r.body){ai.remove();add('err','request failed: HTTP '+r.status);return}
+  const rd=r.body.getReader(),dec=new TextDecoder();let buf='',reply='';
+  for(;;){const{done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
+   let i;while((i=buf.indexOf('\\n\\n'))>=0){const fr=buf.slice(0,i);buf=buf.slice(i+2);
+    const ev=(fr.match(/^event: (.*)$/m)||[])[1],dt=(fr.match(/^data: (.*)$/m)||[])[1];if(!ev||dt===undefined)continue;
+    let d={};try{d=JSON.parse(dt)}catch{continue}
+    if(ev==='text'){reply+=d.delta||'';ai.textContent=reply;log.scrollTop=log.scrollHeight}
+    else if(ev==='tool_start'){let a=d.args;try{a=JSON.stringify(d.args).slice(0,100)}catch{}tool('+ '+d.name+' '+a)}
+    else if(ev==='tool_end'){tool('  |- '+(d.ok?'ok':'failed'))}
+    else if(ev==='usage'){tool('  · '+d.input+'in/'+d.output+'out tok')}
+    else if(ev==='error'){ai.className='err';ai.textContent='error: '+(d.error||'unknown')}
+    else if(ev==='done'){if(d.reply&&!reply){ai.textContent=d.reply}else if(!reply){ai.textContent='(empty)'}ai.className='ai'}
+   }}
+ }catch(err){ai.remove();add('err','request failed: '+err)}
  poll()};
 fetch('/api/ping').then(()=>st.textContent='ready').catch(()=>st.textContent='offline');
 setInterval(poll,1500);poll();refresh();
@@ -206,8 +225,28 @@ export function startWebServer(opts: {
         return json(200, { ok: true });
       }
       if (req.method === "POST" && url.pathname === "/api/message") {
-        const { text } = await readBody();
+        const { text, stream } = await readBody();
         if (!text?.trim()) return json(400, { error: "empty message" });
+        if (stream) {
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+            "x-accel-buffering": "no",
+          });
+          const emit: WebEmit = (type, data) => {
+            try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+          };
+          emit("start", { ts: Date.now() });
+          try {
+            const r = await opts.onMessage(String(text).slice(0, 20_000), emit);
+            emit(r.error ? "error" : "done", r.error ? { error: r.error } : { reply: r.reply });
+          } catch (e) {
+            emit("error", { error: e instanceof Error ? e.message : String(e) });
+          }
+          res.end();
+          return;
+        }
         try {
           const r = await opts.onMessage(String(text).slice(0, 20_000));
           return json(200, r);
