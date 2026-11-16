@@ -21,6 +21,8 @@ export interface ProviderSettings {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /** Display-name override, e.g. "Colibri" for a custom endpoint. */
+  name?: string;
 }
 
 export interface BrosConfig {

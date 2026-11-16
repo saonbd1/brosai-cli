@@ -62,10 +62,11 @@ export function resolveProvider(opts: {
     cfg.lastUsedProvider ??
     (process.env.BROSAI_PROVIDER?.trim() || "openrouter");
 
-  const def = getProvider(providerId);
-  if (!def) throw new Error(`Unknown provider "${providerId}". Known: ${PROVIDERS.map((p) => p.id).join(", ")}`);
+  const base = getProvider(providerId);
+  if (!base) throw new Error(`Unknown provider "${providerId}". Known: ${PROVIDERS.map((p) => p.id).join(", ")}`);
 
   const stored = cfg.providers[providerId]?.settings;
+  const def = stored?.name ? { ...base, name: stored.name } : base;
   const { apiKey: resolvedKey } = opts.apiKey ? { apiKey: opts.apiKey } : resolveApiKey(providerId, stored);
   const apiKey = resolvedKey ?? (def.noKey ? "ollama" : undefined);
 
@@ -95,5 +96,6 @@ export function resolveProvider(opts: {
 export function storeKey(providerId: string, apiKey: string, extra: ProviderSettings = {}): void {
   const def = getProvider(providerId);
   if (!def) throw new Error(`Unknown provider "${providerId}"`);
-  saveProviderSettings(providerId, { ...extra, apiKey }, { setLastUsed: true });
+  const existing = readConfig().providers[providerId]?.settings ?? {};
+  saveProviderSettings(providerId, { ...existing, ...extra, apiKey }, { setLastUsed: true });
 }

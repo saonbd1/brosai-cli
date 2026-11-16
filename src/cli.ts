@@ -488,7 +488,8 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
     const fetched = baseUrl ? await fetchModelList(baseUrl) : [];
     const options = [...new Set([...(def?.models ?? []), ...fetched])];
     const cur = session.provider.def.id === providerId ? session.provider.model : stored?.model;
-    console.log(C.bold(`\n${def?.name ?? providerId} — select model${cur ? ` (current: ${cur})` : ""}:`));
+    const displayName = stored?.name ?? def?.name ?? providerId;
+    console.log(C.bold(`\n${displayName} — select model${cur ? ` (current: ${cur})` : ""}:`));
     options.slice(0, 30).forEach((m, i) => console.log(`  ${i + 1}) ${m}`));
     if (options.length > 30) console.log(C.dim(`  ... and ${options.length - 30} more`));
     if (!options.length) console.log(C.dim("  (none discovered — type a model name)"));
@@ -513,9 +514,8 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
 
   const configureCustom = async () => {
     const stored = readConfig().providers.custom?.settings;
-    askText(`Base URL [${stored?.baseUrl ?? "http://localhost:8000/v1"}]: `, async (v) => {
-      const baseUrl = (v.trim() || stored?.baseUrl || "http://localhost:8000/v1").replace(/\/+$/, "");
-      saveProviderSettings("custom", { ...stored, baseUrl }, { setLastUsed: false });
+    const afterUrl = async (baseUrl: string, name: string) => {
+      saveProviderSettings("custom", { ...stored, baseUrl, name }, { setLastUsed: false });
       const pickModel = () => showModelPicker("custom", () => applyProvider("custom"));
       if (!stored?.apiKey && !process.env.BROSAI_API_KEY) {
         askText("API key (leave empty if the endpoint needs none): ", async (k) => {
@@ -523,6 +523,11 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
           await pickModel();
         });
       } else await pickModel();
+    };
+    askText(`Base URL [${stored?.baseUrl ?? "http://localhost:8000/v1"}]: `, (v) => {
+      const baseUrl = (v.trim() || stored?.baseUrl || "http://localhost:8000/v1").replace(/\/+$/, "");
+      askText(`Display name [${stored?.name ?? "Custom"}]: `, (nv) =>
+        afterUrl(baseUrl, nv.trim() || stored?.name || "Custom"));
     });
   };
 
@@ -540,7 +545,8 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
     console.log(C.bold("\nProviders:"));
     PROVIDERS.forEach((p, i) => {
       const mark = p.id === cur ? C.cyan(" <- current") : "";
-      console.log(`  ${i + 1}) ${p.id.padEnd(12)} ${p.name.padEnd(26)} key: ${keyStatus(p.id)}${mark}`);
+      const name = readConfig().providers[p.id]?.settings?.name ?? p.name;
+      console.log(`  ${i + 1}) ${p.id.padEnd(12)} ${name.padEnd(26)} key: ${keyStatus(p.id)}${mark}`);
     });
     console.log(C.dim("Enter a number or provider id. 'custom' = any OpenAI-compatible endpoint."));
     picker = { title: "provider", options: PROVIDERS.map((p) => p.id), allowCustom: false, onPick: selectProvider };
