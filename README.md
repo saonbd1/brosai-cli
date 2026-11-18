@@ -10,6 +10,11 @@ Personal CLI coding agent. Give it a task in plain English — it reads, writes,
 - **Sessions** — auto-saved history; `--continue` / `--resume` / `brosai sessions`
 - **Safety** — workspace path sandbox, command approval prompts (`-y` to auto-approve), `0600` config files
 - **Telegram** — chat with the agent from your phone, approve commands with buttons, and let the agent message you when it finishes
+- **Web dashboard** — `brosai web` serves a localhost UI with live SSE streaming, tool cards, approvals, sessions, images, diff/undo, provider/mode/MCP controls, and a skills manager
+- **Skills & rules** — drop `SKILL.md` files into `~/.brosai/skills/` or `.brosai/skills/`; manage them via `brosai skills` or the dashboard
+- **Checkpoints** — git shadow-repo snapshots every turn; `undo`, `diff`, `/checkpoints`
+- **Plan mode** — read-only tools, outputs a plan before touching anything
+- **Diagnostics** — `brosai doctor [--deep]` checks config, providers, MCP, and environment
 - **Cross-platform** — Linux/WSL binary + native Windows `.exe`
 - **Self-updating** — checks for new releases once a day; `brosai update` installs the latest binary
 
@@ -147,8 +152,11 @@ brosai allow add "npm test*"        # always approve matching commands
 brosai allow rm "npm test*"         # remove a pattern
 brosai --plan "..."                 # plan mode: read-only, outputs a plan only
 brosai --mode plan                  # same, or --mode act to switch back
-brosai web [--port 8420]            # localhost web chat UI (approvals as buttons)
+brosai web [--port 8420]            # localhost web dashboard (auto-opens browser; SSE streaming, sessions, skills, MCP manager)
 brosai doctor [--deep]              # diagnose config, provider, MCP, environment
+brosai skills                       # list installed skills (global + project)
+brosai skills add <name> <file.md> [--project]   # install a SKILL.md
+brosai skills rm <name> / show <name>
 ```
 
 Checkpoints use a hidden git repo under `~/.brosai/checkpoints/` — every turn snapshots the workspace first, so `brosai undo` can restore files and remove agent-created ones. Disable with `--no-checkpoint`. Read-only shell commands (`ls`, `cat`, `git status/diff/log`, …) never prompt for approval; everything else asks `[y/n/a]` where `a` approves the rest of the session.
@@ -194,6 +202,15 @@ src/
   runtime.ts      shared agent-turn logic (CLI + Telegram)
   telegram.ts     Telegram bot mode, pairing, telegram_* tools
   update.ts       release check + self-update
+  web.ts          localhost web server + dashboard API (SSE streaming)
+  dashboard.html  embedded web UI (regenerate src/dashboard.ts via `npm run dashboard`)
+  skills.ts       skill install/list/remove (~/.brosai/skills, .brosai/skills)
+  doctor.ts       `brosai doctor` diagnostics
+  checkpoint.ts   git shadow-repo snapshots + undo/diff
+  compact.ts      context auto-compaction
+  allow.ts        command allowlist
+  markdown.ts     chat markdown renderer
+  pricing.ts      token cost estimates
 ```
 
 ## Security notes
@@ -236,7 +253,23 @@ src/
 - [x] Self-update — `brosai update` + daily release check
 - [x] `brosai doctor` / `/doctor` — config, provider reachability, MCP, environment diagnostics (`--deep` adds a live completion + MCP connect test)
 - [x] Token/cost tracking — pricing table, session + lifetime estimates in `/cost` and run footer
+- [x] Web dashboard v2 — SSE token/tool streaming, stop button, session sidebar with history restore, image attach, diff/undo overlays, todos + usage panels, provider/mode/MCP controls, skills tab
+- [x] Skills management — `brosai skills` CLI + dashboard upload; global (`~/.brosai/skills`) and project (`.brosai/skills`) scopes
+- [x] Source archives — every GitHub release ships `brosai-src-<ver>.zip` alongside binaries
 
 ### Planned / Not done
 
 - [ ] MCP resources/prompts (tools only today)
+- [ ] Per-project provider/mode defaults
+- [ ] Conversational `/rewind` (undo by description, not just last turn)
+- [ ] `brosai web` as a service (systemd unit / always-on dashboard)
+- [ ] Mobile-responsive pass on the dashboard
+- [ ] Colibri speed profile (fewer MCP tools for casual sessions / faster prefill)
+
+### Next up (tomorrow)
+
+- [ ] Polish pass on dashboard mobile layout + empty states
+- [ ] `brosai skills` — seed a starter skill or two (e.g. `release-checklist`, `commit-style`) so the feature is discoverable
+- [ ] README: document the skills file format (frontmatter `name`/`description` + markdown body)
+- [ ] Decide on MCP resources/prompts scope — implement or defer
+- [ ] Try `brosai web` on the Oracle VM behind the Cloudflare tunnel (always-on dashboard)
