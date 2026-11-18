@@ -47,6 +47,9 @@ export interface WebControl {
   loadSession?(file: string): Promise<{ ok: boolean; error?: string; history?: { role: string; content: string; images?: number }[] }>;
   getHistory?(): { role: string; content: string; images?: number }[];
   addImage?(data: string, name: string): Promise<{ ok: boolean; count?: number; error?: string }>;
+  listSkills?(): { name: string; scope: string; description: string; chars: number }[];
+  saveSkill?(input: { name: string; content: string; scope?: string }): Promise<{ ok: boolean; error?: string }>;
+  removeSkill?(name: string): Promise<{ ok: boolean; error?: string }>;
 }
 
 export type WebEmit = (type: string, data: unknown) => void;
@@ -114,6 +117,19 @@ export function startWebServer(opts: {
       }
       if (req.method === "GET" && url.pathname === "/api/history" && ctl?.getHistory) {
         return json(200, { history: ctl.getHistory() });
+      }
+      if (req.method === "GET" && url.pathname === "/api/skills" && ctl?.listSkills) {
+        return json(200, { skills: ctl.listSkills() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/skill" && ctl?.saveSkill) {
+        const { name, content, scope } = await readBody();
+        if (!name || !content) return json(400, { error: "name and content required" });
+        return json(200, await ctl.saveSkill({ name: String(name), content: String(content), scope: scope ? String(scope) : undefined }));
+      }
+      if (req.method === "POST" && url.pathname === "/api/skill/rm" && ctl?.removeSkill) {
+        const { name } = await readBody();
+        if (!name) return json(400, { error: "name required" });
+        return json(200, await ctl.removeSkill(String(name)));
       }
       if (req.method === "POST" && url.pathname === "/api/image" && ctl?.addImage) {
         const { data, name } = await readBody();

@@ -20,6 +20,7 @@ import { isAllowlisted, isReadOnlyCommand, addAllowedCommand, removeAllowedComma
 import type { ChatMessage } from "./providers/index.ts";
 import type { SessionState } from "./runtime.ts";
 import { telegramToolDefs, runTelegramBot, pairChat, saveTelegramConfig, clearTelegramConfig, telegramSettings, verifyToken, sendText } from "./telegram.ts";
+import { listSkills, getSkill, saveSkill, removeSkill, readSkillFile, projectSkillsDir, globalSkillsDir } from "./skills.ts";
 
 const PLAIN = !process.stdout.isTTY || Boolean(process.env.NO_COLOR);
 const C = PLAIN
@@ -153,6 +154,10 @@ ${C.bold("Flags:")}
   brosai telegram setup [token]   Connect a Telegram bot to this machine (one-time pairing)
   brosai telegram        Chat with the agent from Telegram (bot mode; approvals via buttons)
   brosai telegram status|test|logout
+  brosai skills                List installed skills (global + project)
+  brosai skills add <name> <file.md> [--project]  Install a SKILL.md as a skill
+  brosai skills rm <name>          Remove a skill
+  brosai skills show <name>        Print a skill's content
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
 ${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
@@ -358,6 +363,55 @@ async function authCmd(providerId: string | undefined, key: string | undefined):
   if (!apiKey?.trim()) { console.error(C.red("Empty key")); process.exit(2); }
   storeKey(providerId, apiKey.trim());
   console.log(C.green(`Saved key for ${providerId} -> ~/.brosai/config.json (0600)`));
+}
+
+function skillsCmd(args: string[]): void {
+  const cwd = process.cwd();
+  const sub = args[0];
+  if (sub === "add") {
+    const name = args[1];
+    const file = args[2];
+    const project = args.includes("--project");
+    if (!name || !file) { console.error(C.red("Usage: brosai skills add <name> <file.md> [--project]")); process.exit(2); }
+    let content: string;
+    try { content = readFileSync(resolve(file), "utf8"); }
+    catch { console.error(C.red(`cannot read ${file}`)); process.exit(1); }
+    try {
+      const info = saveSkill(cwd, name, content, project ? "project" : "global");
+      console.log(C.green(`skill "${info.name}" installed (${info.scope}) -> ${info.path}`));
+      console.log(C.dim("Loaded into the system prompt on the next brosai run."));
+    } catch (e) { console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
+    return;
+  }
+  if (sub === "rm" || sub === "remove") {
+    const name = args[1];
+    if (!name) { console.error(C.red("Usage: brosai skills rm <name>")); process.exit(2); }
+    if (removeSkill(cwd, name)) console.log(C.green(`removed skill "${name}"`));
+    else { console.error(C.red(`no skill named "${name}"`)); process.exit(1); }
+    return;
+  }
+  if (sub === "show") {
+    const name = args[1];
+    if (!name) { console.error(C.red("Usage: brosai skills show <name>")); process.exit(2); }
+    const sk = getSkill(cwd, name);
+    if (!sk) { console.error(C.red(`no skill named "${name}"`)); process.exit(1); }
+    console.log(readSkillFile(sk.path));
+    return;
+  }
+  const skills = listSkills(cwd);
+  if (!skills.length) {
+    console.log("No skills installed.");
+    console.log(C.dim(`Global dir:   ${globalSkillsDir()}`));
+    console.log(C.dim(`Project dir:  ${projectSkillsDir(cwd)}`));
+    console.log(C.dim("Add one: brosai skills add <name> <file.md> [--project]"));
+    return;
+  }
+  console.log(C.bold("Skills:\n"));
+  for (const sk of skills) {
+    const tag = sk.scope === "project" ? C.cyan("project") : C.dim("global");
+    console.log(`  ${C.bold(sk.name.padEnd(20))} ${tag}  ${sk.description || C.dim("(no description)")}`);
+  }
+  console.log(C.dim(`\n${skills.length} skill(s). Global: ${globalSkillsDir()}  Project: ${projectSkillsDir(cwd)}`));
 }
 
 async function telegramCmd(args: string[]): Promise<void> {
@@ -940,6 +994,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (argv[0] === "skills") { skillsCmd(argv.slice(1)); return; }
   const { opts, positional, command } = parseArgs(argv);
   if (command === "help") { usage(); return; }
   if (command === "version") { console.log(`brosai ${VERSION}`); return; }
@@ -1095,6 +1150,20 @@ async function main(): Promise<void> {
         if (data.length > 11_500_000) return { ok: false, error: `${name}: over 8MB` };
         session.pendingImages = [...(session.pendingImages ?? []), data];
         return { ok: true, count: session.pendingImages.length };
+      },
+      listSkills: () => listSkills(opts.cwd).map((sk) => ({ name: sk.name, scope: sk.scope, description: sk.description, chars: sk.chars })),
+      saveSkill: async (input) => {
+        try {
+          const scope = input.scope === "project" ? "project" : "global";
+          const info = saveSkill(opts.cwd, input.name, input.content, scope);
+          return { ok: true };
+        } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+      },
+      removeSkill: async (name) => {
+        try {
+          if (!removeSkill(opts.cwd, name)) return { ok: false, error: `no skill named "${name}"` };
+          return { ok: true };
+        } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
       },
     };
     const bridge = startWebServer({
