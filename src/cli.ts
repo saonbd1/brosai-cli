@@ -160,7 +160,7 @@ ${C.bold("Flags:")}
   brosai skills show <name>        Print a skill's content
 
 ${C.bold("Providers:")} ${PROVIDERS.map((p) => p.id).join(", ")}
-${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH
+${C.bold("Env vars:")} BROSAI_PROVIDER, BROSAI_MODEL, BROSAI_API_KEY, BROS_DIR, BROS_CONFIG_PATH, BROS_WEB_TOKEN, BROS_NO_BROWSER
 
 ${C.bold("REPL commands:")} /status  /provider(s)  /model  /mode  /allow  /sessions  /cost  /diff  /undo  /checkpoints  /clear  /help  /exit`);
 }
@@ -1202,13 +1202,16 @@ async function main(): Promise<void> {
       },
     });
     const webUrl = `http://localhost:${port}`;
-    console.log(C.green(`BrosAi web UI → ${webUrl}  (${provider.def.name}/${provider.model}, cwd ${opts.cwd})`));
+    const tokenQ = process.env.BROS_WEB_TOKEN ? `?token=${encodeURIComponent(process.env.BROS_WEB_TOKEN)}` : "";
+    console.log(C.green(`BrosAi web UI → ${webUrl}${tokenQ}  (${provider.def.name}/${provider.model}, cwd ${opts.cwd})`));
+    if (process.env.BROS_WEB_TOKEN) console.log(C.dim("auth: BROS_WEB_TOKEN enabled — open the URL above once to set the session cookie"));
     console.log(C.dim("Ctrl+C to stop. Approvals appear as buttons in the page."));
     if (!process.env.BROS_NO_BROWSER) {
       try {
-        const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", webUrl]]
-          : process.platform === "darwin" ? ["open", [webUrl]]
-          : ["xdg-open", [webUrl]];
+        const openUrl = `${webUrl}${tokenQ}`;
+        const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", openUrl]]
+          : process.platform === "darwin" ? ["open", [openUrl]]
+          : ["xdg-open", [openUrl]];
         spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
       } catch {}
     }

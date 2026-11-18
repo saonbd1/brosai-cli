@@ -124,6 +124,38 @@ Security notes:
 - `brosai telegram -y` removes approval prompts, so anyone who gets into your Telegram account could run shell commands on your machine. Don't use it unless you accept that.
 - Env: `BROSAI_TELEGRAM_API` overrides the API base URL (proxies, testing).
 
+## Skills
+
+Skills are reusable instruction sets the agent loads into its system prompt. Two scopes:
+
+- **Global** — `~/.brosai/skills/<name>/SKILL.md` (Windows: `%USERPROFILE%\.brosai\skills\`)
+- **Project** — `<repo>/.brosai/skills/<name>/SKILL.md`
+
+A skill is a directory containing a `SKILL.md` file:
+
+```markdown
+---
+name: my-skill                  # optional; defaults to the directory name
+description: What this skill does   # shown in `brosai skills` listing
+---
+
+# Instructions
+
+Step-by-step guidance the agent should follow when this skill is relevant.
+```
+
+Frontmatter is optional — without it, the first prose line becomes the description. Keep skills focused; they share the ~24k-char context budget with `AGENTS.md`/rules files.
+
+```bash
+brosai skills                                # list all skills
+brosai skills add my-skill ./SKILL.md        # install globally
+brosai skills add my-skill ./SKILL.md --project   # install for this repo only
+brosai skills rm my-skill                    # remove
+brosai skills show my-skill                  # print contents
+```
+
+The dashboard's **Skills** tab (right panel) offers the same thing with a file picker. Starter skills live in `skills/` in this repo (`release-checklist`, `commit-style`) — install with `brosai skills add <name> skills/<name>/SKILL.md`.
+
 ## Tool performance notes
 
 - **Parallel reads:** when the model emits several read-only calls together (`read_file`, `glob`, `grep`, `list_dir`, `web_fetch`, read-only `spawn_agent`), they run concurrently. Anything that can change state still runs in order.
@@ -266,10 +298,8 @@ src/
 - [ ] Mobile-responsive pass on the dashboard
 - [ ] Colibri speed profile (fewer MCP tools for casual sessions / faster prefill)
 
-### Next up (tomorrow)
+### Next up
 
 - [ ] Polish pass on dashboard mobile layout + empty states
-- [ ] `brosai skills` — seed a starter skill or two (e.g. `release-checklist`, `commit-style`) so the feature is discoverable
-- [ ] README: document the skills file format (frontmatter `name`/`description` + markdown body)
 - [ ] Decide on MCP resources/prompts scope — implement or defer
-- [ ] Try `brosai web` on the Oracle VM behind the Cloudflare tunnel (always-on dashboard)
+- [ ] Host `brosai web` on the Oracle VM behind the Cloudflare tunnel (always-on dashboard)

@@ -84,6 +84,25 @@ export function startWebServer(opts: {
       for await (const c of req) body += c;
       return body ? JSON.parse(body) : {};
     };
+    const WEB_TOKEN = process.env.BROS_WEB_TOKEN;
+    if (WEB_TOKEN) {
+      const cookieToken = decodeURIComponent((req.headers.cookie ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith("brosai_token="))?.slice(13) ?? "");
+      const provided = req.headers["x-bros-token"] ?? url.searchParams.get("token") ?? cookieToken;
+      if (provided !== WEB_TOKEN) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      // Token via query param on a page load: persist as cookie and strip it from the URL
+      if (req.method === "GET" && url.pathname === "/" && url.searchParams.get("token") && !cookieToken) {
+        res.writeHead(302, {
+          location: url.pathname,
+          "set-cookie": `brosai_token=${encodeURIComponent(WEB_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`,
+        });
+        res.end();
+        return;
+      }
+    }
     try {
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
