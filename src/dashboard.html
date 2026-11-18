@@ -26,6 +26,7 @@
     .chat{min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;background:var(--bg)}.mode-banner{display:none;align-items:center;justify-content:center;height:34px;border-bottom:1px solid #d2992255;background:#d2992212;color:#f0c674;font-size:12px}.mode-banner.show{display:flex}
     .messages{min-height:0;overflow:auto;padding:22px 24px 14px;scroll-behavior:smooth}.empty{height:100%;display:grid;place-content:center;text-align:center;color:var(--muted)}.empty-mark{font-size:28px;color:var(--accent-hi);margin-bottom:10px}.empty h1{margin:0 0 5px;color:var(--text);font-size:19px}.empty p{max-width:430px;margin:8px auto 18px}.prompts{display:flex;justify-content:center;gap:7px;flex-wrap:wrap}.prompt{border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text);padding:8px 10px}
     .message{max-width:900px;margin:0 auto 16px}.message.user{display:flex;justify-content:flex-end}.message.user .bubble{max-width:min(78%,680px);background:#16233c;border:1px solid #274067;border-radius:9px;padding:9px 12px;white-space:pre-wrap}.message.assistant{color:var(--text)}.assistant-content{white-space:pre-wrap;word-break:break-word}.assistant-content.streaming{border-right:1px solid var(--blue);animation:cursor 1s steps(1) infinite}@keyframes cursor{50%{border-color:transparent}}
+    .thinking{color:var(--muted);display:inline-flex;align-items:center;gap:6px}.thinking .td{width:6px;height:6px;border-radius:50%;background:var(--accent-hi);animation:tblink 1.2s infinite}.thinking .td:nth-child(2){animation-delay:.2s}.thinking .td:nth-child(3){animation-delay:.4s}@keyframes tblink{0%,80%,100%{opacity:.25}40%{opacity:1}}
     .assistant-content .code{display:block;background:#0a0f1c;border:1px solid var(--border);border-radius:6px;padding:10px;margin:8px 0;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Cascadia Code,Menlo,monospace;font-size:12px;white-space:pre}
     .assistant-content .ic{background:#1a2438;border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:ui-monospace,monospace;font-size:12px}
     .assistant-content .md-h{font-weight:700;margin:10px 0 4px}.assistant-content .md-li{padding-left:14px}
@@ -149,7 +150,7 @@
       return s.replace(/\n/g,'<br>');
     }
     function addAssistantText(){
-      hideEmpty();const m=document.createElement('div');m.className='message assistant';const c=document.createElement('div');c.className='assistant-content streaming';m.appendChild(c);messages.appendChild(m);return c
+      hideEmpty();const m=document.createElement('div');m.className='message assistant';const c=document.createElement('div');c.className='assistant-content streaming';c.innerHTML='<span class="thinking"><span class="td"></span><span class="td"></span><span class="td"></span></span> Thinking…';m.appendChild(c);messages.appendChild(m);return c
     }
     async function send(){
       const text=input.value.trim();if(!text||curAbort)return;input.value='';input.style.height='38px';hideEmpty();
