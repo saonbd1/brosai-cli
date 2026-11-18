@@ -1,9 +1,16 @@
 {
   "name": "brosai",
   "version": "0.2.0",
-  "description": "BrosAi — personal CLI coding agent",
+  "description": "BrosAi \u2014 personal CLI coding agent",
   "type": "module",
-  "bin": { "brosai": "./src/cli.ts" },
-  "engines": { "node": ">=22.18" },
-  "scripts": { "start": "node src/cli.ts" }
+  "bin": {
+    "brosai": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "dashboard": "node tools/embed-dashboard.mjs"
+  }
 }

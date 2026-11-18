@@ -997,6 +997,8 @@ async function main(): Promise<void> {
     const control = {
       getState: () => ({
         mode: opts.mode,
+        cwd: opts.cwd,
+        sessionFile: session.sessionFile ?? null,
         provider: { id: provider.def.id, name: provider.def.name, model: provider.model },
         providers: PROVIDERS.map((d) => {
           const s = readConfig().providers[d.id]?.settings;
@@ -1042,6 +1044,40 @@ async function main(): Promise<void> {
           return { ok: false, error: e instanceof Error ? e.message : String(e) };
         }
       },
+      getDiff: async () => {
+        try {
+          const diff = await workspaceDiff(opts.cwd);
+          return { diff: diff ?? "no changes since last checkpoint" };
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      undo: async () => {
+        try {
+          const cp = await undoCheckpoint(opts.cwd, 1);
+          return cp ? { message: `undid: ${cp.label}` } : { error: "nothing to undo" };
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      listSessions: () => listSessions(),
+      newSession: () => { session.history = []; session.sessionFile = undefined; session.todos = []; },
+      loadSession: async (file: string) => {
+        const saved = loadSession(file);
+        if (!saved) return { ok: false, error: "session not found" };
+        session.history = saved.history;
+        session.sessionFile = file;
+        try { session.provider = { ...session.provider, model: saved.model }; provider = session.provider; } catch {}
+        return { ok: true };
+      },
+      addImage: async (data: string, name: string) => {
+        if (!/^data:image\/(png|jpeg|gif|webp|bmp);base64,/.test(data)) {
+          return { ok: false, error: `unsupported image type (png/jpg/gif/webp/bmp): ${name}` };
+        }
+        if (data.length > 11_500_000) return { ok: false, error: `${name}: over 8MB` };
+        session.pendingImages = [...(session.pendingImages ?? []), data];
+        return { ok: true, count: session.pendingImages.length };
+      },
     };
     const bridge = startWebServer({
       port,
@@ -1056,13 +1092,23 @@ async function main(): Promise<void> {
                 try { parsed = JSON.parse(args); } catch {}
                 emit("tool_start", { name, args: parsed });
               },
-              onToolEnd: (name, result) => emit("tool_end", { name, ok: result.ok, output: String(result.output ?? "").slice(0, 4000) }),
-              onUsage: (i, o) => emit("usage", { input: i, output: o }),
+              onToolEnd: (name, result) => {
+                emit("tool_end", { name, ok: result.ok, output: String(result.output ?? "").slice(0, 4000) });
+                if (name === "todo_write") {
+                  emit("todos", { todos: session.todos.map((t) => ({ text: t.content, done: t.status === "completed", active: t.status === "in_progress" })) });
+                }
+              },
+              onUsage: (i, o) => {
+                session.usage.input += i;
+                session.usage.output += o;
+                emit("usage", { input: i, output: o });
+              },
             }
           : undefined;
         try {
-          const reply = await runTurn(session, text, opts, [], { events, signal });
-          return { reply };
+          const imgs = session.pendingImages?.splice(0) ?? [];
+          const reply = await runTurn(session, text, opts, imgs, { events, signal });
+          return { reply, usage: { input: session.usage.input, output: session.usage.output, cost: session.costUsd } };
         } catch (e) {
           return { reply: "", error: e instanceof Error ? e.message : String(e) };
         }
