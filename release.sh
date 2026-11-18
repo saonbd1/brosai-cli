@@ -10,12 +10,23 @@ command -v gh  >/dev/null || { echo "gh required (github cli, authenticated)"; e
 
 cd "$(dirname "$0")"
 
+echo "==> bumping VERSION to $VER"
+sed -i "s/^export const VERSION = \".*\";/export const VERSION = \"$VER\";/" src/update.ts
+grep -q "VERSION = \"$VER\"" src/update.ts || { echo "failed to bump VERSION"; exit 1; }
+
 echo "==> building binaries"
 bun build src/cli.ts --compile --outfile brosai-linux
 bun build src/cli.ts --compile --target=bun-windows-x64 --outfile brosai.exe
 
 echo "==> zipping source"
 git archive --format=zip --prefix="brosai-cli-$VER/" HEAD -o "/tmp/brosai-src-$VER.zip"
+
+echo "==> committing version bump"
+git add src/update.ts
+if ! git diff --cached --quiet; then
+  git commit -m "release: v$VER"
+  git push origin HEAD
+fi
 
 echo "==> tagging $TAG"
 git tag -a "$TAG" -m "Release $TAG" || true
