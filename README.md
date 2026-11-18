@@ -185,6 +185,7 @@ brosai allow rm "npm test*"         # remove a pattern
 brosai --plan "..."                 # plan mode: read-only, outputs a plan only
 brosai --mode plan                  # same, or --mode act to switch back
 brosai web [--port 8420]            # localhost web dashboard (auto-opens browser; SSE streaming, sessions, skills, MCP manager)
+# expose safely: BROS_WEB_TOKEN=<secret> brosai web   # requires ?token= once, then cookie auth
 brosai doctor [--deep]              # diagnose config, provider, MCP, environment
 brosai skills                       # list installed skills (global + project)
 brosai skills add <name> <file.md> [--project]   # install a SKILL.md
@@ -302,4 +303,4 @@ src/
 
 - [ ] Polish pass on dashboard mobile layout + empty states
 - [ ] Decide on MCP resources/prompts scope — implement or defer
-- [ ] Host `brosai web` on the Oracle VM behind the Cloudflare tunnel (always-on dashboard)
+- [x] Host `brosai web` on the Oracle VM behind the Cloudflare tunnel — live at `https://chat.saonbd.bond` (systemd `brosai-web.service`, `BROS_WEB_TOKEN` auth)
