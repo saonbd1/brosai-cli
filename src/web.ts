@@ -44,7 +44,8 @@ export interface WebControl {
   undo?(): Promise<{ message?: string; error?: string }>;
   listSessions?(): { file: string; updatedAt: string; provider: string; model: string; cwd: string; turns: number }[];
   newSession?(): void;
-  loadSession?(file: string): Promise<{ ok: boolean; error?: string }>;
+  loadSession?(file: string): Promise<{ ok: boolean; error?: string; history?: { role: string; content: string; images?: number }[] }>;
+  getHistory?(): { role: string; content: string; images?: number }[];
   addImage?(data: string, name: string): Promise<{ ok: boolean; count?: number; error?: string }>;
 }
 
@@ -110,6 +111,9 @@ export function startWebServer(opts: {
           return json(200, await ctl.loadSession(String(file)));
         }
         return json(400, { error: "action must be new or load" });
+      }
+      if (req.method === "GET" && url.pathname === "/api/history" && ctl?.getHistory) {
+        return json(200, { history: ctl.getHistory() });
       }
       if (req.method === "POST" && url.pathname === "/api/image" && ctl?.addImage) {
         const { data, name } = await readBody();

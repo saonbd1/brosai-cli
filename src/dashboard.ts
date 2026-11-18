@@ -183,11 +183,26 @@ export const DASHBOARD_HTML = `<!doctype html>
     document.querySelectorAll('.prompt').forEach(b=>b.onclick=()=>{input.value=b.dataset.prompt;send()});
     /* sessions */
     let currentFile=null,sessions=[];
+    function renderHistory(list){
+      hideEmpty();
+      for(const m of list||[]){
+        if(m.role==='user'){
+          const u=document.createElement('div');u.className='message user';
+          u.innerHTML=\`<div class="bubble">\${esc(m.content||'')}\${m.images?\`<div class="muted" style="font-size:11px;margin-top:4px">🖼 \${m.images} image(s)</div>\`:''}</div>\`;
+          messages.appendChild(u);
+        }else if(m.role==='assistant'&&m.content){
+          const a=document.createElement('div');a.className='message assistant';
+          const c=document.createElement('div');c.className='assistant-content';c.innerHTML=md(m.content);
+          a.appendChild(c);messages.appendChild(a);
+        }
+      }
+      scroll();
+    }
     async function loadSessions(active){
       const r=await api('/api/sessions');sessions=r.sessions||[];currentFile=active;
       document.getElementById('sessions').innerHTML=sessions.length?sessions.map(s=>\`<button class="session \${s.file===currentFile?'active':''}" data-file="\${esc(s.file)}"><div class="session-title">\${esc(s.file.replace(/\\.json$/,''))}</div><div class="session-meta">\${esc(s.provider||'')}/\${esc(s.model||'')} · \${s.turns||0} turns</div></button>\`).join(''):'<div class="muted" style="padding:6px">No saved sessions yet</div>';
     }
-    document.getElementById('sessions').onclick=async e=>{const b=e.target.closest('.session');if(!b||b.dataset.file===currentFile)return;const r=await api('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'load',file:b.dataset.file})});if(r.error){addError(r.error);return}currentFile=b.dataset.file;showEmpty();activity=[];todos=[];renderPanel();loadSessions(currentFile);addError('Session loaded: '+b.dataset.file.replace(/\\.json$/,''))};
+    document.getElementById('sessions').onclick=async e=>{const b=e.target.closest('.session');if(!b||b.dataset.file===currentFile)return;const r=await api('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'load',file:b.dataset.file})});if(r.error){addError(r.error);return}currentFile=b.dataset.file;showEmpty();renderHistory(r.history);activity=[];todos=[];renderPanel();loadSessions(currentFile)};
     document.getElementById('newChat').onclick=async()=>{await api('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'new'})});currentFile=null;showEmpty();activity=[];todos=[];usage={input:0,output:0,cost:0};fmtUsage();renderPanel();loadSessions(null)};
     /* images */
     document.getElementById('attach').onclick=()=>document.getElementById('file').click();
@@ -216,6 +231,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     document.getElementById('diffOverlay').onclick=e=>{if(e.target.id==='diffOverlay')e.target.classList.add('hidden')};
     document.getElementById('undoBtn').onclick=async()=>{if(!confirm('Undo last turn? Workspace files will be restored to the previous checkpoint.'))return;const d=await api('/api/undo',{method:'POST'});addError(d.error||d.message||'Undo requested')};
     fetch('/api/ping').then(r=>document.getElementById('connection').style.background=r.ok?'var(--accent-hi)':'var(--red)').catch(()=>document.getElementById('connection').style.background='var(--red)');
+    api('/api/history').then(r=>{if(r.history&&r.history.length)renderHistory(r.history)});
     getState();loadSessions(null);pollApprovals();renderPanel();
   </script>
 </body>

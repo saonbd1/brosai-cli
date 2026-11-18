@@ -1073,6 +1073,9 @@ async function main(): Promise<void> {
         }
       },
       listSessions: () => listSessions(),
+      getHistory: () => session.history
+        .filter((m) => m.role === "user" || (m.role === "assistant" && m.content))
+        .map((m) => ({ role: m.role, content: m.content ?? "", images: m.images?.length ?? 0 })),
       newSession: () => { session.history = []; session.sessionFile = undefined; session.todos = []; },
       loadSession: async (file: string) => {
         const saved = loadSession(file);
@@ -1080,7 +1083,10 @@ async function main(): Promise<void> {
         session.history = saved.history;
         session.sessionFile = file;
         try { session.provider = { ...session.provider, model: saved.model }; provider = session.provider; } catch {}
-        return { ok: true };
+        const history = saved.history
+          .filter((m) => m.role === "user" || (m.role === "assistant" && m.content))
+          .map((m) => ({ role: m.role, content: m.content ?? "", images: m.images?.length ?? 0 }));
+        return { ok: true, history };
       },
       addImage: async (data: string, name: string) => {
         if (!/^data:image\/(png|jpeg|gif|webp|bmp);base64,/.test(data)) {
