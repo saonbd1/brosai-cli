@@ -1,6 +1,6 @@
 import { readConfig, writeConfig } from "./config.ts";
 
-export const VERSION = "0.6.0";
+export const VERSION = "0.6.1";
 const REPO = "saonbd1/brosai-cli";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
