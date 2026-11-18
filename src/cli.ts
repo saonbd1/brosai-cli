@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { runAgent, type AgentEvents } from "./agent.ts";
@@ -1114,8 +1115,17 @@ async function main(): Promise<void> {
         }
       },
     });
-    console.log(C.green(`BrosAi web UI → http://localhost:${port}  (${provider.def.name}/${provider.model}, cwd ${opts.cwd})`));
+    const webUrl = `http://localhost:${port}`;
+    console.log(C.green(`BrosAi web UI → ${webUrl}  (${provider.def.name}/${provider.model}, cwd ${opts.cwd})`));
     console.log(C.dim("Ctrl+C to stop. Approvals appear as buttons in the page."));
+    if (!process.env.BROS_NO_BROWSER) {
+      try {
+        const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", webUrl]]
+          : process.platform === "darwin" ? ["open", [webUrl]]
+          : ["xdg-open", [webUrl]];
+        spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+      } catch {}
+    }
     await new Promise<void>((r) => { process.on("SIGINT", () => r()); bridge.server.on("close", () => r()); });
     bridge.close();
     mcp.close();
