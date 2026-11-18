@@ -143,6 +143,7 @@ ${C.bold("Flags:")}
   brosai allow add <pat> Always approve commands matching pattern (* wildcard)
   brosai allow rm <pat>  Remove an approved pattern
   brosai diff            Show changes since the last checkpoint
+  brosai doctor [--deep] Diagnose config, provider, MCP, and environment
   brosai mcp             List configured MCP servers
   brosai mcp add <n> -- <cmd> [args]   Add an MCP server (stdio)
   brosai mcp rm <n>      Remove an MCP server
@@ -592,7 +593,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
   return last?.role === "assistant" ? (last.content ?? "") : "";
 }
 
-const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/image", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/help", "/exit"];
+const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/image", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/doctor", "/help", "/exit"];
 
 function makeCompleter(getProviderId: () => string) {
   return (line: string): [string[], string] => {
@@ -798,6 +799,11 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       console.log(d ? `\n${d}\n` : C.yellow("no checkpoints yet — run a task first"));
       reprompt(); continue;
     }
+    if (input === "/doctor" || input.startsWith("/doctor ")) {
+      const { runDoctor } = await import("./doctor.ts");
+      await runDoctor(input.split(/\s+/)[1] === "deep");
+      reprompt(); continue;
+    }
     if (input === "/checkpoints") {
       const cps = listCheckpoints(opts.cwd);
       if (!cps.length) console.log(C.dim("no checkpoints for this workspace"));
@@ -937,6 +943,11 @@ async function main(): Promise<void> {
   const { opts, positional, command } = parseArgs(argv);
   if (command === "help") { usage(); return; }
   if (command === "version") { console.log(`brosai ${VERSION}`); return; }
+  if (argv[0] === "doctor") {
+    const { runDoctor } = await import("./doctor.ts");
+    await runDoctor(argv.includes("--deep"));
+    return;
+  }
   if (argv[0] === "update") {
     const { selfUpdate } = await import("./update.ts");
     try { console.log(await selfUpdate()); }
