@@ -14,6 +14,7 @@ Rules:
 - If a task is ambiguous, state assumptions briefly and proceed with the most reasonable interpretation.
 - Never expose secrets, API keys, or credentials in output.
 - Use run_command for shell work; commands run via bash -lc in the workspace root.
+- To add capabilities, use mcp_add to connect an MCP server (e.g. npx/uvx packages or a URL) — its tools become available immediately. Use mcp_list/mcp_remove to manage them.
 - Tool outputs are truncated at ~30k chars; paginate with read_file offset/limit when needed.`;
 
 const MAX_CONTEXT_CHARS = 24_000;

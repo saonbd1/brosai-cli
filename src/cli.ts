@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { runAgent, type AgentEvents } from "./agent.ts";
 import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
-import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
+import { TOOLS, MCP_MANAGE_TOOLS, type TodoItem, type ToolDef, type ToolContext } from "./tools/index.ts";
 import { connectMcpServers, listMcpServers, addMcpServer, removeMcpServer } from "./mcp.ts";
 import { resolveProvider, storeKey, getProvider, PROVIDERS, type ResolvedProvider } from "./secrets.ts";
 import { readConfig, saveProviderSettings, setLastUsedProvider, recordUsage, lifetimeUsage } from "./config.ts";
@@ -464,10 +464,35 @@ async function telegramCmd(args: string[]): Promise<void> {
   let provider: ResolvedProvider;
   try { provider = resolveProvider({ providerId: opts.provider, model: opts.model, baseUrl: opts.baseUrl, apiKey: opts.apiKey }); }
   catch (e) { console.error(C.red(`error: ${e instanceof Error ? e.message : String(e)}`)); process.exit(1); }
-  const mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+  let mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+  const tgToolDefs = telegramToolDefs();
   const session: SessionState = {
     provider, cwd: opts.cwd, mode: opts.mode, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0,
-    approveState: { all: false, approved: new Set() }, todos: [], mcpDefs: [...mcp.toolDefs, ...telegramToolDefs()],
+    approveState: { all: false, approved: new Set() }, todos: [], mcpDefs: [...mcp.toolDefs, ...tgToolDefs],
+  };
+  const reconnectMcp = async () => {
+    mcp.close();
+    mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+    session.mcpDefs = [...mcp.toolDefs, ...tgToolDefs];
+  };
+  session.mcpCtl = {
+    list: () => Object.entries(listMcpServers()).map(([name, s]) => ({ name, transport: s.url ? "http" : "stdio" })),
+    add: async (name, cfg) => {
+      try {
+        addMcpServer(name, cfg);
+        await reconnectMcp();
+        const prefix = `mcp__${name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}__`;
+        return { ok: true, tools: mcp.toolDefs.filter((d) => d.name.startsWith(prefix)).length };
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    },
+    remove: async (name) => {
+      try {
+        if (!listMcpServers()[name]) return { ok: false, error: `no MCP server named "${name}"` };
+        removeMcpServer(name);
+        await reconnectMcp();
+        return { ok: true };
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    },
   };
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
@@ -529,6 +554,7 @@ interface Session {
   approveState: { all: boolean; approved: Set<string> };
   todos: TodoItem[];
   mcpDefs?: ToolDef[];
+  mcpCtl?: ToolContext["mcp"];
   pendingImages?: string[];
 }
 
@@ -591,7 +617,9 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
   const todoContext = session.todos.length
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
-  const allDefs = opts.mode === "plan" ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name)) : [...TOOLS, ...(session.mcpDefs ?? [])];
+  const allDefs = () => opts.mode === "plan"
+    ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name))
+    : [...TOOLS, ...MCP_MANAGE_TOOLS, ...(session.mcpDefs ?? [])];
   const events = hooks?.events ?? makeEvents(session, opts.json, opts.raw);
   const result = await runAgent(prompt, {
     provider: session.provider,
@@ -604,6 +632,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     ctx: {
       approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)),
       todos: session.todos,
+      mcp: session.mcpCtl,
       subagent: async (sp: string, readOnly: boolean) => {
         const childDefs = readOnly
           ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name))
@@ -1063,6 +1092,31 @@ async function main(): Promise<void> {
   const tgDefs = telegramToolDefs();
   if (tgDefs.length) session.mcpDefs = [...(session.mcpDefs ?? []), ...tgDefs];
   process.on("exit", () => mcp.close());
+  const reconnectMcp = async () => {
+    mcp.close();
+    mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
+    session.mcpDefs = [...mcp.toolDefs, ...tgDefs];
+    console.error(C.dim(`mcp: reconnected ${mcp.servers.join(", ") || "(none)"} (${mcp.toolDefs.length} tools)`));
+  };
+  session.mcpCtl = {
+    list: () => Object.entries(listMcpServers()).map(([name, s]) => ({ name, transport: s.url ? "http" : "stdio" })),
+    add: async (name, cfg) => {
+      try {
+        addMcpServer(name, cfg);
+        await reconnectMcp();
+        const prefix = `mcp__${name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}__`;
+        return { ok: true, tools: mcp.toolDefs.filter((d) => d.name.startsWith(prefix)).length };
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    },
+    remove: async (name) => {
+      try {
+        if (!listMcpServers()[name]) return { ok: false, error: `no MCP server named "${name}"` };
+        removeMcpServer(name);
+        await reconnectMcp();
+        return { ok: true };
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    },
+  };
   const wantResume = opts.resume ?? (opts.continueSession ? "__latest__" : undefined);
   if (wantResume) {
     const saved = loadSession(wantResume === "__latest__" ? undefined : wantResume);
@@ -1084,12 +1138,6 @@ async function main(): Promise<void> {
     const { startWebServer, makeWebApprover } = await import("./web.ts");
     const approvals: WebApproval[] = [];
     opts.approveFn = makeWebApprover(approvals, { all: false });
-    const reconnectMcp = async () => {
-      mcp.close();
-      mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
-      session.mcpDefs = [...mcp.toolDefs, ...tgDefs];
-      console.error(C.dim(`mcp: reconnected ${mcp.servers.join(", ") || "(none)"} (${mcp.toolDefs.length} tools)`));
-    };
     const control = {
       getState: () => ({
         mode: opts.mode,

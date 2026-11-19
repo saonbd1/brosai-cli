@@ -18,7 +18,8 @@ export interface AgentOptions {
   maxTokens?: number;
   signal?: AbortSignal;
   tools?: ToolSpec[];
-  toolDefs?: ToolDef[];
+  /** Static list, or a getter re-evaluated each step so hot-added tools (e.g. new MCP servers) become available mid-turn. */
+  toolDefs?: ToolDef[] | (() => ToolDef[]);
   ctx?: Partial<ToolContext>;
   events?: AgentEvents;
   /** Data-URL images attached to this turn's user message. */
@@ -42,9 +43,8 @@ function parallelSafe(tc: { name: string; arguments: string }): boolean {
 }
 
 export async function runAgent(prompt: string, opts: AgentOptions): Promise<AgentResult> {
-  const defs = opts.toolDefs ?? TOOLS;
-  const tools = opts.tools ?? defs.map(({ name, description, parameters }) => ({ name, description, parameters }));
-  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx, toolDefs: defs, signal: opts.signal };
+  const resolveDefs = () => (typeof opts.toolDefs === "function" ? opts.toolDefs() : opts.toolDefs ?? TOOLS);
+  const ctx: ToolContext = { cwd: opts.cwd, ...opts.ctx, signal: opts.signal };
   const maxSteps = opts.maxSteps ?? 100;
 
   const messages: ChatMessage[] = [
@@ -59,6 +59,9 @@ export async function runAgent(prompt: string, opts: AgentOptions): Promise<Agen
 
   while (steps < maxSteps) {
     steps++;
+    const defs = resolveDefs();
+    ctx.toolDefs = defs;
+    const tools = opts.tools ?? defs.map(({ name, description, parameters }) => ({ name, description, parameters }));
     let turnContent = "";
     const toolCalls: { id: string; name: string; arguments: string }[] = [];
 

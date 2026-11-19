@@ -22,6 +22,12 @@ export interface ToolContext {
   toolDefs?: ToolDef[];
   /** Spawn a child agent (fresh context). Injected by the CLI; absent in plan mode/children. */
   subagent?: (prompt: string, readOnly: boolean) => Promise<string>;
+  /** MCP server management with hot-reload. Present in act mode on hosts that support it. */
+  mcp?: {
+    list(): { name: string; transport: string }[];
+    add(name: string, cfg: { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> }): Promise<{ ok: boolean; error?: string; tools?: number }>;
+    remove(name: string): Promise<{ ok: boolean; error?: string }>;
+  };
 }
 
 export interface ToolResult {
@@ -403,6 +409,75 @@ export const TOOLS: ToolDef[] = [
       if (!prompt) return { ok: false, output: "spawn_agent requires a prompt" };
       const out = await ctx.subagent(prompt, args.read_only === true);
       return { ok: true, output: clip(out || "(sub-agent returned no output)") };
+    },
+  },
+];
+
+/** Agent-facing MCP server management. Not part of TOOLS — injected only in act mode on the main agent. */
+export const MCP_MANAGE_TOOLS: ToolDef[] = [
+  {
+    name: "mcp_list",
+    description: "List MCP servers configured for BrosAi. Their tools appear as mcp__<server>__<tool>.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute(_args: any, ctx: ToolContext): Promise<ToolResult> {
+      if (!ctx.mcp) return { ok: false, output: "MCP management is not available in this context" };
+      const list = ctx.mcp.list();
+      return { ok: true, output: list.length ? list.map((s) => `${s.name} (${s.transport})`).join("\n") : "No MCP servers configured" };
+    },
+  },
+  {
+    name: "mcp_add",
+    description: "Install/connect an MCP server for BrosAi. stdio: provide command + args (e.g. command=\"npx\", args=[\"-y\",\"@modelcontextprotocol/server-memory\"]). HTTP: provide url (+ optional headers). Requires user approval. On success its tools become available immediately as mcp__<name>__<tool>.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Server name (used in mcp__<name>__ tool prefix)" },
+        command: { type: "string", description: "stdio: executable, e.g. npx, uvx, node" },
+        args: { type: "array", items: { type: "string" }, description: "stdio: arguments for the command" },
+        env: { type: "object", description: "stdio: extra environment variables" },
+        url: { type: "string", description: "http: server URL" },
+        headers: { type: "object", description: "http: request headers" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      if (!ctx.mcp) return { ok: false, output: "MCP management is not available in this context" };
+      const name = String(args.name ?? "").trim();
+      if (!name) return { ok: false, output: "mcp_add requires a name" };
+      const cfg = {
+        command: args.command ? String(args.command) : undefined,
+        args: Array.isArray(args.args) ? args.args.map(String) : undefined,
+        env: args.env && typeof args.env === "object" ? args.env : undefined,
+        url: args.url ? String(args.url) : undefined,
+        headers: args.headers && typeof args.headers === "object" ? args.headers : undefined,
+      };
+      if (!cfg.command && !cfg.url) return { ok: false, output: "Provide either command (stdio) or url (http)" };
+      if (cfg.command && cfg.url) return { ok: false, output: "Provide either command or url, not both" };
+      const desc = cfg.url ? `mcp add ${name} (http: ${cfg.url})` : `mcp add ${name} (stdio: ${[cfg.command, ...(cfg.args ?? [])].join(" ")})`;
+      if (ctx.approve && !(await ctx.approve(desc))) return { ok: false, output: "Denied by user" };
+      const r = await ctx.mcp.add(name, cfg);
+      if (!r.ok) return { ok: false, output: r.error ?? "failed to add MCP server" };
+      return { ok: true, output: `MCP server "${name}" connected — ${r.tools ?? 0} tool(s) now available as mcp__${name}__*` };
+    },
+  },
+  {
+    name: "mcp_remove",
+    description: "Remove a configured MCP server and disconnect it. Its mcp__<name>__* tools stop working.",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "Server name to remove" } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      if (!ctx.mcp) return { ok: false, output: "MCP management is not available in this context" };
+      const name = String(args.name ?? "").trim();
+      if (!name) return { ok: false, output: "mcp_remove requires a name" };
+      const desc = `mcp remove ${name}`;
+      if (ctx.approve && !(await ctx.approve(desc))) return { ok: false, output: "Denied by user" };
+      const r = await ctx.mcp.remove(name);
+      return r.ok ? { ok: true, output: `MCP server "${name}" removed` } : { ok: false, output: r.error ?? "failed to remove" };
     },
   },
 ];

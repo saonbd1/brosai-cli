@@ -1,6 +1,6 @@
 import { runAgent, type AgentEvents } from "./agent.ts";
 import { SYSTEM_PROMPT, loadContextFiles } from "./prompt.ts";
-import { TOOLS, type TodoItem, type ToolDef } from "./tools/index.ts";
+import { TOOLS, MCP_MANAGE_TOOLS, type TodoItem, type ToolDef, type ToolContext } from "./tools/index.ts";
 import { readConfig } from "./config.ts";
 import { getProvider, type ResolvedProvider } from "./secrets.ts";
 import { recordUsage } from "./config.ts";
@@ -32,6 +32,7 @@ export interface SessionState {
   approveState: { all: boolean; approved: Set<string> };
   todos: TodoItem[];
   mcpDefs?: ToolDef[];
+  mcpCtl?: ToolContext["mcp"];
 }
 
 export interface TurnOptions {
@@ -64,9 +65,9 @@ export async function runRuntimeTurn(session: SessionState, prompt: string, opts
     ? `\n\nCurrent task list (use todo_write to update):\n${session.todos.map((t) => `- [${t.status === "completed" ? "x" : t.status === "in_progress" ? ">" : " "}] ${t.content}`).join("\n")}`
     : "";
 
-  const allDefs = session.mode === "plan"
+  const allDefs = () => session.mode === "plan"
     ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name))
-    : [...TOOLS, ...(session.mcpDefs ?? [])];
+    : [...TOOLS, ...MCP_MANAGE_TOOLS, ...(session.mcpDefs ?? [])];
 
   const result = await runAgent(prompt, {
     provider,
@@ -79,6 +80,7 @@ export async function runRuntimeTurn(session: SessionState, prompt: string, opts
     ctx: {
       approve: opts.approve,
       todos: session.todos,
+      mcp: session.mcpCtl,
       subagent: async (sp: string, readOnly: boolean) => {
         const childDefs = readOnly
           ? TOOLS.filter((d) => READONLY_TOOLS.has(d.name))
