@@ -198,11 +198,16 @@ export function startWebServer(opts: {
             try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
           };
           emit("start", { ts: Date.now() });
+          // SSE comment heartbeat: keeps bytes flowing during long model prefills so
+          // reverse proxies (e.g. Cloudflare's ~100s read timeout) don't kill the stream.
+          const hb = setInterval(() => { try { res.write(": hb\n\n"); } catch {} }, 20_000);
           try {
             const r = await opts.onMessage(String(text).slice(0, 20_000), emit, ac.signal);
             emit(r.error ? "error" : "done", r.error ? { error: r.error } : { reply: r.reply, aborted: ac.signal.aborted, usage: r.usage });
           } catch (e) {
             emit("error", { error: e instanceof Error ? e.message : String(e) });
+          } finally {
+            clearInterval(hb);
           }
           res.end();
           return;
