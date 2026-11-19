@@ -274,6 +274,50 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "web_search",
+    description: "Search the web (DuckDuckGo). Returns result titles, URLs, and snippets. Read-only. Use for research, then web_fetch promising URLs for full content.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" },
+        max_results: { type: "integer", description: "Max results (default 8, max 20)" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    async execute(args: any, ctx: ToolContext): Promise<ToolResult> {
+      const q = String(args.query ?? "").trim();
+      if (!q) return { ok: false, output: "web_search requires a query" };
+      const max = Math.min(Math.max(1, Number(args.max_results) || 8), 20);
+      const strip = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, " ").trim();
+      try {
+        const res = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(q)}&count=${max}&setlang=en-us&cc=us&mkt=en-US`, {
+          signal: AbortSignal.timeout(20_000),
+          headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36", "accept-language": "en-US,en;q=0.9" },
+        });
+        if (!res.ok) return { ok: false, output: `Search failed: HTTP ${res.status}` };
+        const html = await res.text();
+        const results: { title: string; url: string; snippet: string }[] = [];
+        const blockRe = /<li class="b_algo"[\s\S]*?<\/li>/g;
+        let bm: RegExpExecArray | null;
+        while ((bm = blockRe.exec(html)) && results.length < max) {
+          const block = bm[0];
+          const am = block.match(/<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+          if (!am) continue;
+          let url = am[1].replace(/&amp;/g, "&");
+          const um = url.match(/[?&]u=a1([^&]+)/);
+          if (um) { try { url = Buffer.from(um[1], "base64").toString("utf8"); } catch {} }
+          const pm = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+          results.push({ title: strip(am[2]), url, snippet: pm ? strip(pm[1]) : "" });
+        }
+        if (!results.length) return { ok: false, output: "No results parsed — try rephrasing the query" };
+        return { ok: true, output: clip(results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join("\n\n")) };
+      } catch (e) {
+        return { ok: false, output: `Search failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+  },
+  {
     name: "apply_patch",
     description: "Apply a Codex-style patch to files in the workspace. Format:\n*** Begin Patch\n*** Add File: path\n+line\n*** Update File: path\n@@ optional context\n context_line\n-old_line\n+new_line\n*** Delete File: path\n*** Move to: newpath (after Update File)\n*** End Patch",
     parameters: {
