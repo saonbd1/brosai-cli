@@ -87,7 +87,11 @@ export function startWebServer(opts: {
       return body ? JSON.parse(body) : {};
     };
     const WEB_TOKEN = process.env.BROS_WEB_TOKEN;
-    if (WEB_TOKEN) {
+    // Auth only applies to non-localhost Host headers — local `brosai web` on 127.0.0.1
+    // is always trusted; the token matters when exposed via tunnel/proxy (public hostname).
+    const hostHeader = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+    const localHost = ["localhost", "127.0.0.1", "::1"].includes(hostHeader);
+    if (WEB_TOKEN && !localHost) {
       const cookieToken = decodeURIComponent((req.headers.cookie ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith("brosai_token="))?.slice(13) ?? "");
       const provided = req.headers["x-bros-token"] ?? url.searchParams.get("token") ?? cookieToken;
       if (provided !== WEB_TOKEN) {
