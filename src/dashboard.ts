@@ -38,6 +38,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     .overlay{position:fixed;z-index:30;inset:0;background:#000a;display:grid;place-items:center}.overlay-card{width:min(860px,92vw);max-height:84vh;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:#0e1524;box-shadow:0 24px 60px #000c}.overlay-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border)}.overlay-body{overflow:auto;padding:12px 14px}.overlay-body pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,monospace;font-size:12px;color:#c9d1d9}
     @media(max-width:1199px){.layout{grid-template-columns:190px minmax(400px,1fr)}.right{position:fixed;z-index:10;top:52px;right:0;bottom:0;width:280px;transform:translateX(100%);transition:transform .16s ease}.right.open{transform:translateX(0);box-shadow:-12px 0 30px #0008}.workspace{width:170px}}
     @media(max-width:799px){body{overflow:hidden}.app{grid-template-rows:52px minmax(0,1fr)}.topbar{padding:0 8px}.brand{min-width:auto}.brand-name,.status-path,.status-token{display:none}.provider-select{min-width:145px;width:145px}.layout{display:block}.left{display:none}.messages{padding:14px 12px}.composer-wrap{padding:8px}.right{top:52px;width:min(320px,90vw)}.status{display:none}.icon-btn.mcp-desktop{display:none}.approval-actions{flex-wrap:wrap}}
+    .palette{position:fixed;z-index:40;top:12vh;left:50%;transform:translateX(-50%);width:min(560px,92vw);border:1px solid var(--border);border-radius:12px;background:#0e1524f2;box-shadow:0 24px 70px #000d;overflow:hidden;backdrop-filter:blur(8px)}
+    .palette input{width:100%;height:44px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text);padding:0 14px;font-size:14px;outline:none}
+    .pal-list{max-height:320px;overflow:auto;padding:6px}
+    .pal-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;cursor:pointer;color:var(--text)}
+    .pal-item.on{background:var(--accent-soft)}
+    .pal-item .pal-hint{color:var(--muted);font-size:11px;white-space:nowrap}
+    .pal-empty{padding:14px;text-align:center;color:var(--muted)}
+    .palette-foot{border-top:1px solid var(--border);padding:6px 12px;color:var(--muted);font-size:11px;display:flex;gap:12px}
   </style>
 </head>
 <body>
@@ -105,13 +113,18 @@ export const DASHBOARD_HTML = `<!doctype html>
       <div class="overlay-body"><pre id="diffBody" class="mono"></pre></div>
     </div>
   </div>
+  <div class="palette hidden" id="palette">
+    <input id="palInput" placeholder="Type a command…" autocomplete="off">
+    <div class="pal-list" id="palList"></div>
+    <div class="palette-foot"><span>↑↓ navigate</span><span>↵ run</span><span>esc close</span></div>
+  </div>
   <script>
     const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
     const messages=document.getElementById('messages'),empty=document.getElementById('empty'),input=document.getElementById('input');
     const EMPTY_HTML=empty.innerHTML;
     const hideEmpty=()=>{const e=document.getElementById('empty');if(e)e.classList.add('hidden')};
     const showEmpty=()=>{messages.innerHTML='';const em=document.createElement('div');em.className='empty';em.id='empty';em.innerHTML=EMPTY_HTML;messages.appendChild(em)};
-    let curAbort=null,activity=[],todos=[],usage={input:0,output:0,cost:0},pendingImages=0,ctx=null;
+    let curAbort=null,activity=[],todos=[],usage={input:0,output:0,cost:0},pendingImages=0,ctx=null,providers=[];
     let skills=[];
     async function loadSkills(){const r=await api('/api/skills');skills=r.skills||[];const v=document.querySelector('.panel-tab.on');if(v&&v.dataset.view==='skills')renderPanel()}
     async function api(path,options){const r=await fetch(path,options);let d={};try{d=await r.json()}catch{}if(!r.ok)d.error=d.error||\`HTTP \${r.status}\`;return d}
@@ -122,7 +135,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         document.getElementById('provider').innerHTML=s.providers.map(p=>\`<option value="\${esc(p.id)}" \${p.active?'selected':''}>\${esc(p.name)}\${p.model?' · '+esc(p.model):''}</option>\`).join('');
         document.getElementById('cwd').textContent=s.cwd||'~';document.getElementById('workspacePath').textContent=s.cwd||'~';
         if(s.sessionFile&&s.sessionFile!==currentFile)loadSessions(s.sessionFile);
-        setMode(s.mode);ctx=s.context||null;renderPanel();const list=document.getElementById('mcpList');document.getElementById('mcpCount').textContent=s.mcp?.length||0;
+        setMode(s.mode);ctx=s.context||null;providers=s.providers||[];renderPanel();const list=document.getElementById('mcpList');document.getElementById('mcpCount').textContent=s.mcp?.length||0;
         list.innerHTML=(s.mcp||[]).length?(s.mcp||[]).map((m,i)=>\`<div class="drawer-row"><span><strong>\${esc(m.name)}</strong><br><span class="muted mono">\${esc(m.url||((m.command||'')+' '+(m.args||[]).join(' ')))}</span></span><button class="danger-btn" data-rm="\${i}">Remove</button></div>\`).join(''):'<div class="muted">No MCP servers configured</div>';
       }catch{document.getElementById('connection').style.background='var(--red)'}
     }
@@ -243,6 +256,45 @@ export const DASHBOARD_HTML = `<!doctype html>
     document.getElementById('diffOverlay').onclick=e=>{if(e.target.id==='diffOverlay')e.target.classList.add('hidden')};
     document.getElementById('undoBtn').onclick=async()=>{if(!confirm('Undo last turn? Workspace files will be restored to the previous checkpoint.'))return;const d=await api('/api/undo',{method:'POST'});addError(d.error||d.message||'Undo requested')};
     document.getElementById('compactBtn').onclick=async()=>{const b=document.getElementById('compactBtn');b.disabled=true;b.textContent='…';const d=await api('/api/compact',{method:'POST'});b.disabled=false;b.textContent='Compact';if(d.error){addError(d.error)}else{addNote(\`context compacted: \${d.before} → \${d.after} messages\`);getState()}};
+    /* command palette (Ctrl+K / Cmd+K) */
+    let palIdx=0,palItems=[];
+    function palCommands(){
+      const cmds=[
+        {t:'New chat',h:'start a fresh session',run:()=>document.getElementById('newChat').click()},
+        {t:'Compact context',h:'summarize history now',run:()=>document.getElementById('compactBtn').click()},
+        {t:'Show workspace diff',h:'changes since last checkpoint',run:()=>document.getElementById('diffBtn').click()},
+        {t:'Undo last turn',h:'restore previous checkpoint',run:()=>document.getElementById('undoBtn').click()},
+        {t:'Toggle act / plan mode',h:'switch agent mode',run:async()=>{const cur=document.querySelector('#mode button.on')?.dataset.mode==='plan'?'act':'plan';await api('/api/mode',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:cur})});setMode(cur)}},
+        {t:'Open MCP servers',h:'manage connected servers',run:()=>{document.getElementById('mcpDrawer').classList.remove('hidden')}},
+        {t:'Toggle side panel',h:'activity / todos / usage / skills',run:()=>document.getElementById('activityToggle').click()},
+        {t:'Focus message input',h:'back to typing',run:()=>input.focus()},
+        {t:'Show context usage',h:\`\${ctx?Math.round(ctx.tokens/ctx.window*100):0}% of window\`,run:()=>{if(ctx)addNote(\`context: ~\${fmtTok(ctx.tokens)} / \${fmtTok(ctx.window)} tokens (\${ctx.messages} msgs)\`);else addNote('context stats unavailable')}},
+      ];
+      for(const p of providers)cmds.push({t:\`Provider: \${p.name||p.id}\`,h:p.model||'',run:async()=>{const r=await api('/api/provider',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:p.id})});if(r.error)addError(r.error);getState()}});
+      for(const v of['activity','todos','usage','skills'])cmds.push({t:\`Panel: \${v[0].toUpperCase()+v.slice(1)}\`,h:'switch right panel',run:()=>{const b=document.querySelector(\`.panel-tab[data-view="\${v}"]\`);if(b)b.click()}});
+      return cmds;
+    }
+    function palRender(){
+      const q=document.getElementById('palInput').value.trim().toLowerCase();
+      palItems=palCommands().filter(c=>!q||(c.t+' '+c.h).toLowerCase().includes(q));
+      palIdx=Math.min(palIdx,Math.max(0,palItems.length-1));
+      document.getElementById('palList').innerHTML=palItems.length?palItems.map((c,i)=>\`<div class="pal-item \${i===palIdx?'on':''}" data-i="\${i}"><span>\${esc(c.t)}</span><span class="pal-hint">\${esc(c.h)}</span></div>\`).join(''):'<div class="pal-empty">No matching commands</div>';
+    }
+    function palOpen(){document.getElementById('palette').classList.remove('hidden');const i=document.getElementById('palInput');i.value='';palIdx=0;palRender();setTimeout(()=>i.focus(),0)}
+    function palClose(){document.getElementById('palette').classList.add('hidden')}
+    function palRun(i){const c=palItems[i];if(!c)return;palClose();try{const r=c.run();if(r&&r.catch)r.catch(e=>addError(String(e)))}catch(e){addError(String(e))}}
+    document.getElementById('palInput').addEventListener('input',()=>{palIdx=0;palRender()});
+    document.getElementById('palInput').addEventListener('keydown',e=>{
+      if(e.key==='ArrowDown'){e.preventDefault();palIdx=Math.min(palIdx+1,palItems.length-1);palRender()}
+      else if(e.key==='ArrowUp'){e.preventDefault();palIdx=Math.max(palIdx-1,0);palRender()}
+      else if(e.key==='Enter'){e.preventDefault();palRun(palIdx)}
+      else if(e.key==='Escape'){e.preventDefault();palClose()}
+    });
+    document.getElementById('palList').addEventListener('click',e=>{const it=e.target.closest('.pal-item');if(it)palRun(Number(it.dataset.i))});
+    document.getElementById('palette').addEventListener('click',e=>{if(e.target.id==='palette')palClose()});
+    document.addEventListener('keydown',e=>{
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('palette').classList.contains('hidden')?palOpen():palClose()}
+    });
     fetch('/api/ping').then(r=>document.getElementById('connection').style.background=r.ok?'var(--accent-hi)':'var(--red)').catch(()=>document.getElementById('connection').style.background='var(--red)');
     api('/api/history').then(r=>{if(r.history&&r.history.length)renderHistory(r.history)});
     getState();loadSessions(null);loadSkills();pollApprovals();renderPanel();
