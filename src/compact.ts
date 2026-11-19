@@ -25,9 +25,10 @@ export async function compactHistory(
   provider: ResolvedProvider,
   history: ChatMessage[],
   maxTokens: number,
+  force = false,
 ): Promise<ChatMessage[]> {
   const budget = Math.floor(maxTokens * 0.8);
-  if (estimateTokens(history) <= budget) return history;
+  if (!force && estimateTokens(history) <= budget) return history;
 
   // Keep the last ~10 messages, cut only at a user-message boundary so
   // tool_call/tool_result pairs are never split.

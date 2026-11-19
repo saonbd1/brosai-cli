@@ -22,6 +22,7 @@ export interface WebState {
   mcp: McpServerInfo[];
   cwd?: string;
   sessionFile?: string | null;
+  context?: { tokens: number; systemTokens: number; historyTokens: number; window: number; messages: number };
 }
 
 export interface McpAddInput {
@@ -47,6 +48,7 @@ export interface WebControl {
   loadSession?(file: string): Promise<{ ok: boolean; error?: string; history?: { role: string; content: string; images?: number }[] }>;
   getHistory?(): { role: string; content: string; images?: number }[];
   addImage?(data: string, name: string): Promise<{ ok: boolean; count?: number; error?: string }>;
+  compact?(): Promise<{ ok: boolean; before?: number; after?: number; error?: string }>;
   listSkills?(): { name: string; scope: string; description: string; chars: number }[];
   saveSkill?(input: { name: string; content: string; scope?: string }): Promise<{ ok: boolean; error?: string }>;
   removeSkill?(name: string): Promise<{ ok: boolean; error?: string }>;
@@ -175,6 +177,9 @@ export function startWebServer(opts: {
         const { name } = await readBody();
         if (!name) return json(400, { error: "name required" });
         return json(200, await ctl.removeMcp(String(name)));
+      }
+      if (req.method === "POST" && url.pathname === "/api/compact" && ctl?.compact) {
+        return json(200, await ctl.compact());
       }
       if (req.method === "POST" && url.pathname === "/api/approve") {
         const { id, ok, all } = await readBody();

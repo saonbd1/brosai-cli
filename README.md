@@ -216,7 +216,9 @@ Images attach to the user message and stay in session history, so follow-up ques
 
 ### REPL commands
 
-`/provider(s)` · `/model` · `/mode <act|plan>` · `/image <path>` · `/allow <pat>` · `/clear` · `/cost` · `/diff` · `/undo` · `/checkpoints` · `/sessions` · `/status` · `/help` · `/exit`
+`/provider(s)` · `/model` · `/mode <act|plan>` · `/image <path>` · `/allow <pat>` · `/clear` · `/cost` · `/diff` · `/undo` · `/checkpoints` · `/sessions` · `/status` · `/context` · `/compact` · `/help` · `/exit`
+
+`/context` shows context-window usage (system prompt + history tokens vs. the window, with a progress bar); `/compact` forces summarization of older history immediately instead of waiting for the 80% auto-compaction threshold. The web dashboard shows the same context meter in the Usage panel and has a **Compact** button in the workspace card.
 
 ## Project layout
 

@@ -12,7 +12,7 @@ import { readConfig, saveProviderSettings, setLastUsedProvider, recordUsage, lif
 import { estimateCost, formatCost } from "./pricing.ts";
 import { VERSION, pendingUpdate } from "./update.ts";
 import type { WebApproval } from "./web.ts";
-import { compactHistory } from "./compact.ts";
+import { compactHistory, estimateTokens } from "./compact.ts";
 import { MarkdownRenderer } from "./markdown.ts";
 import { saveSession, loadSession, listSessions } from "./session.ts";
 import { createCheckpoint, undoCheckpoint, listCheckpoints, workspaceDiff } from "./checkpoint.ts";
@@ -647,7 +647,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
   return last?.role === "assistant" ? (last.content ?? "") : "";
 }
 
-const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/image", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/doctor", "/help", "/exit"];
+const SLASH_COMMANDS = ["/provider", "/providers", "/model", "/mode", "/image", "/clear", "/cost", "/diff", "/undo", "/checkpoints", "/allow", "/sessions", "/status", "/context", "/compact", "/doctor", "/help", "/exit"];
 
 function makeCompleter(getProviderId: () => string) {
   return (line: string): [string[], string] => {
@@ -806,6 +806,35 @@ async function repl(session: Session, opts: CliOpts): Promise<void> {
       const n = Math.max(1, Number(input.split(/\s+/)[1]) || 1);
       const cp = await undoCheckpoint(opts.cwd, n);
       console.log(cp ? C.green(`undone ${cp.label} (${cp.hash.slice(0, 7)})`) : C.yellow("no checkpoints to undo"));
+      reprompt(); continue;
+    }
+    if (input === "/context" || input === "/ctx") {
+      const sysTokens = estimateTokens([{ role: "system", content: (opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT) + loadContextFiles(opts.cwd) }]);
+      const histTokens = estimateTokens(session.history);
+      const total = sysTokens + histTokens;
+      const pct = opts.contextWindow > 0 ? Math.min(999, Math.round((total / opts.contextWindow) * 100)) : 0;
+      const filled = Math.min(30, Math.round((pct / 100) * 30));
+      console.log(C.bold(" context"));
+      console.log(`  system prompt : ~${sysTokens} tokens`);
+      console.log(`  history       : ~${histTokens} tokens across ${session.history.length} messages`);
+      console.log(`  pending images: ${session.pendingImages?.length ?? 0}`);
+      console.log(`  total         : ~${total} / ${opts.contextWindow} tokens  [${"#".repeat(filled)}${"-".repeat(30 - filled)}] ${pct}%`);
+      console.log(C.dim("  (/compact forces summarization; auto-compaction kicks in at 80%)"));
+      reprompt(); continue;
+    }
+    if (input === "/compact") {
+      const before = session.history.length;
+      const beforeTok = estimateTokens(session.history);
+      console.log(C.dim("compacting context (this calls the model)…"));
+      try {
+        session.history = await compactHistory(session.provider, session.history, opts.contextWindow, true);
+        const afterTok = estimateTokens(session.history);
+        console.log(session.history.length !== before || afterTok < beforeTok
+          ? C.green(`context compacted: ${before} -> ${session.history.length} messages (~${beforeTok} -> ~${afterTok} tokens)`)
+          : C.yellow("nothing to compact — history is already minimal"));
+      } catch (e) {
+        console.log(C.red(`compact failed: ${e instanceof Error ? e.message : String(e)}`));
+      }
       reprompt(); continue;
     }
     if (input === "/status" || input === "/state") {
@@ -1072,6 +1101,11 @@ async function main(): Promise<void> {
           return { id: d.id, name: s?.name ?? d.name, model: s?.model ?? d.models[0], active: d.id === provider.def.id };
         }),
         mcp: Object.entries(listMcpServers()).map(([name, s]) => ({ name, command: s.command, args: s.args, url: s.url, headers: s.headers })),
+        context: (() => {
+          const systemTokens = estimateTokens([{ role: "system", content: (opts.mode === "plan" ? PLAN_PROMPT : SYSTEM_PROMPT) + loadContextFiles(opts.cwd) }]);
+          const historyTokens = estimateTokens(session.history);
+          return { tokens: systemTokens + historyTokens, systemTokens, historyTokens, window: opts.contextWindow, messages: session.history.length };
+        })(),
       }),
       setMode: (mode: "act" | "plan") => { opts.mode = mode; },
       setProvider: async (id: string) => {
@@ -1158,6 +1192,22 @@ async function main(): Promise<void> {
           const info = saveSkill(opts.cwd, input.name, input.content, scope);
           return { ok: true };
         } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+      },
+      compact: async () => {
+        const before = session.history.length;
+        try {
+          session.history = await compactHistory(session.provider, session.history, opts.contextWindow, true);
+          session.sessionFile = saveSession({
+            file: session.sessionFile,
+            provider: session.provider.def.id,
+            model: session.provider.model,
+            cwd: opts.cwd,
+            history: session.history,
+          });
+          return { ok: true, before, after: session.history.length };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
       },
       removeSkill: async (name) => {
         try {
