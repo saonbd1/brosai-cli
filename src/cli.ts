@@ -1323,7 +1323,7 @@ async function main(): Promise<void> {
         spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
       } catch {}
     }
-    await new Promise<void>((r) => { process.on("SIGINT", () => r()); bridge.server.on("close", () => r()); });
+    await new Promise<void>((r) => { process.on("SIGINT", () => { bridge.close(); r(); }); bridge.server.on("close", () => r()); });
     bridge.close();
     mcp.close();
     return;
