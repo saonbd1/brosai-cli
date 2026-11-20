@@ -106,7 +106,7 @@ export function startWebServer(opts: {
       if (req.method === "GET" && url.pathname === "/" && url.searchParams.get("token") && !cookieToken) {
         res.writeHead(302, {
           location: url.pathname,
-          "set-cookie": `brosai_token=${encodeURIComponent(WEB_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`,
+          "set-cookie": `brosai_token=${encodeURIComponent(WEB_TOKEN)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`,
         });
         res.end();
         return;
