@@ -189,7 +189,7 @@
           }
         }
       }catch(e){if(!curAbort?.signal.aborted){ai.classList.remove('streaming');addError(e.message)}}
-      finally{ai.classList.remove('streaming');curAbort=null;document.getElementById('stop').classList.add('hidden');document.getElementById('send').disabled=false;pendingImages=0;document.getElementById('imgChips').innerHTML='';scroll();pollApprovals();getState()}
+      finally{ai.classList.remove('streaming');if(ai.querySelector('.thinking'))ai.innerHTML='<span class="muted">(stopped)</span>';curAbort=null;document.getElementById('stop').classList.add('hidden');document.getElementById('send').disabled=false;pendingImages=0;document.getElementById('imgChips').innerHTML='';scroll();pollApprovals();getState()}
     }
     document.getElementById('send').onclick=send;document.getElementById('stop').onclick=()=>{curAbort?.abort();document.getElementById('stop').classList.add('hidden')};
     input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}if(e.key==='Escape')curAbort?.abort()};
