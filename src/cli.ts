@@ -605,6 +605,15 @@ const SUBAGENT_EXPLORE_PROMPT = `You are a read-only exploration sub-agent. Inve
 
 const READONLY_TOOLS = new Set(["read_file", "glob", "grep", "list_dir", "web_fetch", "todo_write"]);
 
+/** Compaction threshold input. Conservative defaults per model family; override with --context-window / BROSAI_CONTEXT_WINDOW. */
+function guessContextWindow(providerId: string, model: string): number {
+  const m = model.toLowerCase();
+  if (/claude/.test(m) || providerId === "anthropic") return 200_000;
+  if (/gpt-4o|gpt-4\.1|gpt-5|\bo[134]\b|gemini/.test(m)) return 128_000;
+  if (/deepseek/.test(m)) return 64_000;
+  return 32_768;
+}
+
 async function runTurn(session: Session, prompt: string, opts: CliOpts, extraImages: string[] = [], hooks?: { events?: AgentEvents; signal?: AbortSignal }): Promise<string> {
   const images = [...(opts.images ?? []), ...extraImages];
   if (!opts.noCheckpoint && opts.mode !== "plan") await createCheckpoint(opts.cwd, prompt);
@@ -1081,6 +1090,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (!process.env.BROSAI_CONTEXT_WINDOW && !argv.includes("--context-window")) opts.contextWindow = guessContextWindow(provider.def.id, provider.model);
   const session: Session = { provider, history: [], usage: { input: 0, output: 0 }, costUsd: null, steps: 0, approveState: { all: false, approved: new Set() }, todos: [], pendingImages: [] };
 
   let mcp = await connectMcpServers((m) => console.error(C.dim(`warn: ${m}`)));
@@ -1137,7 +1147,7 @@ async function main(): Promise<void> {
     const port = Number(pi >= 0 ? argv[pi + 1] : 0) || Number(process.env.BROS_WEB_PORT) || 8420;
     const { startWebServer, makeWebApprover } = await import("./web.ts");
     const approvals: WebApproval[] = [];
-    opts.approveFn = makeWebApprover(approvals, { all: false });
+    opts.approveFn = makeWebApprover(approvals, { all: false }, (cmd) => opts.yes || isReadOnlyCommand(cmd) || isAllowlisted(cmd));
     const control = {
       getState: () => ({
         mode: opts.mode,

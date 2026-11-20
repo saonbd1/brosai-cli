@@ -74,6 +74,9 @@ export function startWebServer(opts: {
 }): WebBridge {
   const approvals = opts.approvals;
   const ctl = opts.control;
+  // One agent turn at a time: concurrent turns would interleave writes to the shared session history.
+  let busy = false;
+  const denyAllApprovals = () => { for (const a of approvals.splice(0)) a.resolve(false); };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -126,6 +129,7 @@ export function startWebServer(opts: {
         return json(200, await ctl.getDiff());
       }
       if (req.method === "POST" && url.pathname === "/api/undo" && ctl?.undo) {
+        if (busy) return json(409, { error: "agent is busy; stop the current turn first" });
         return json(200, await ctl.undo());
       }
       if (req.method === "GET" && url.pathname === "/api/sessions" && ctl?.listSessions) {
@@ -133,6 +137,7 @@ export function startWebServer(opts: {
       }
       if (req.method === "POST" && url.pathname === "/api/session" && ctl) {
         const { action, file } = await readBody();
+        if (busy) return json(409, { error: "agent is busy; stop the current turn first" });
         if (action === "new") { ctl.newSession?.(); return json(200, { ok: true }); }
         if (action === "load" && file) {
           if (!ctl.loadSession) return json(400, { error: "session loading unavailable" });
@@ -194,8 +199,17 @@ export function startWebServer(opts: {
       if (req.method === "POST" && url.pathname === "/api/message") {
         const { text, stream } = await readBody();
         if (!text?.trim()) return json(400, { error: "empty message" });
+        if (busy) {
+          if (!stream) return json(409, { reply: "", error: "Agent is busy with another request" });
+          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
+          res.write(`event: error\ndata: ${JSON.stringify({ error: "Agent is busy with another request" })}\n\n`);
+          res.end();
+          return;
+        }
         if (stream) {
           const ac = new AbortController();
+          // A cancelled/closed stream must also release any approval the agent is waiting on, or the turn hangs forever.
+          ac.signal.addEventListener("abort", denyAllApprovals, { once: true });
           res.on("close", () => { if (!res.writableFinished) ac.abort(); });
           res.writeHead(200, {
             "content-type": "text/event-stream; charset=utf-8",
@@ -210,22 +224,27 @@ export function startWebServer(opts: {
           // SSE comment heartbeat: keeps bytes flowing during long model prefills so
           // reverse proxies (e.g. Cloudflare's ~100s read timeout) don't kill the stream.
           const hb = setInterval(() => { try { res.write(": hb\n\n"); } catch {} }, 20_000);
+          busy = true;
           try {
             const r = await opts.onMessage(String(text).slice(0, 20_000), emit, ac.signal);
             emit(r.error ? "error" : "done", r.error ? { error: r.error } : { reply: r.reply, aborted: ac.signal.aborted, usage: r.usage });
           } catch (e) {
             emit("error", { error: e instanceof Error ? e.message : String(e) });
           } finally {
+            busy = false;
             clearInterval(hb);
           }
           res.end();
           return;
         }
+        busy = true;
         try {
           const r = await opts.onMessage(String(text).slice(0, 20_000));
           return json(200, r);
         } catch (e) {
           return json(200, { reply: "", error: e instanceof Error ? e.message : String(e) });
+        } finally {
+          busy = false;
         }
       }
       json(404, { error: "not found" });
@@ -244,11 +263,12 @@ export function startWebServer(opts: {
 }
 
 /** Approver that queues requests for the web UI instead of prompting on a TTY. */
-export function makeWebApprover(approvals: WebApproval[], state: { all: boolean }) {
+export function makeWebApprover(approvals: WebApproval[], state: { all: boolean }, autoApprove?: (cmd: string) => boolean) {
+  let nextId = 1; // monotonic: a stale click on an old id can never approve a newer command
   return (cmd: string) =>
     new Promise<{ ok: boolean; all?: boolean }>((resolve) => {
-      if (state.all) return resolve({ ok: true, all: true });
-      const id = approvals.length ? Math.max(...approvals.map((a) => a.id)) + 1 : 1;
+      if (state.all || autoApprove?.(cmd)) return resolve({ ok: true, all: !!state.all });
+      const id = nextId++;
       approvals.push({
         id,
         cmd,

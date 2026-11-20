@@ -24,6 +24,7 @@ interface Check {
 }
 
 const checks: Check[] = [];
+let updateCheck: Promise<void> = Promise.resolve();
 const ok = (label: string, detail?: string) => checks.push({ status: "ok", label, detail });
 const warn = (label: string, detail?: string, hint?: string) => checks.push({ status: "warn", label, detail, hint });
 const fail = (label: string, detail?: string, hint?: string) => checks.push({ status: "fail", label, detail, hint });
@@ -68,10 +69,10 @@ async function checkDirs() {
   }
   await checkProviders(cfg);
   checkStorage(cfg);
-  void pendingUpdate().then((u) => {
+  updateCheck = pendingUpdate().then((u) => {
     if (u) warn("update", `v${u} available — run 'brosai update'`);
     else ok("update", "up to date");
-  });
+  }).catch(() => {});
 }
 
 async function checkProviders(cfg: BrosConfig) {
@@ -176,8 +177,10 @@ export async function runDoctor(deep: boolean) {
     }
   }
 
-  // let the async update check land
-  await new Promise((r) => setTimeout(r, 2500));
+  // wait for the update check (instant when cached), but never longer than 2.5s
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([updateCheck, new Promise((r) => { waitTimer = setTimeout(r, 2500); })]);
+  clearTimeout(waitTimer);
 
   let fails = 0, warns = 0;
   for (const c of checks) {
