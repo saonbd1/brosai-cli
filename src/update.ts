@@ -74,14 +74,10 @@ export async function selfUpdate(): Promise<string> {
   const res = await fetch(url, { signal: AbortSignal.timeout(300_000) });
   if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
-  const { writeFileSync, chmodSync, renameSync, existsSync, readlinkSync } = await import("node:fs");
+  const { writeFileSync, chmodSync, renameSync, existsSync } = await import("node:fs");
   const { resolve } = await import("node:path");
-  // argv[1] inside a bun-compiled binary is the virtual /$bunfs/root path — resolve the real exe on disk.
-  let target = "";
-  if (process.platform === "linux") { try { target = readlinkSync("/proc/self/exe"); } catch {} }
-  if (!target && process.execPath && existsSync(process.execPath)) target = process.execPath;
-  if (!target) target = process.argv[1] ?? "brosai";
-  target = resolve(target);
+  // argv[1] inside a bun-compiled binary is the virtual /$bunfs/root path — execPath is the real exe.
+  const target = resolve(updateTarget()!);
   if (process.platform === "win32") {
     // Can't overwrite a running exe; write sibling and tell user to swap.
     const tmp = target + ".new";
