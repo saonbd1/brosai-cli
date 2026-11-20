@@ -1,6 +1,6 @@
 import { readConfig, writeConfig } from "./config.ts";
 
-export const VERSION = "0.6.9";
+export const VERSION = "0.6.10";
 const REPO = "saonbd1/brosai-cli";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -56,8 +56,16 @@ export async function pendingUpdate(): Promise<string | null> {
   return latest && cmpVer(latest, VERSION) > 0 ? latest : null;
 }
 
+/** The file `brosai update` may replace: only a compiled brosai binary — never node/bun running source. */
+export function updateTarget(execPath: string = process.execPath): string | null {
+  const base = execPath.split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
+  if (base === "node" || base === "bun" || base === "nodejs") return null;
+  return execPath;
+}
+
 /** Download and install the latest release binary over the running executable. */
 export async function selfUpdate(): Promise<string> {
+  if (!updateTarget()) return "running from source — update with: git pull (or reinstall the release binary)";
   const tag = await fetchLatestTag();
   if (!tag) throw new Error("could not fetch latest release");
   if (cmpVer(tag, VERSION) <= 0) return `already up to date (v${VERSION})`;
