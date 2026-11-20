@@ -1224,6 +1224,16 @@ async function main(): Promise<void> {
         .filter((m) => m.role === "user" || (m.role === "assistant" && m.content))
         .map((m) => ({ role: m.role, content: m.content ?? "", images: m.images?.length ?? 0 })),
       newSession: () => { session.history = []; session.sessionFile = undefined; session.todos = []; },
+      addTodo: (text: string) => {
+        session.todos.push({ content: text.slice(0, 300), status: "pending" });
+        return { todos: session.todos.map((t) => ({ text: t.content, done: t.status === "completed", active: t.status === "in_progress" })) };
+      },
+      toggleTodo: (index: number) => {
+        const t = session.todos[index];
+        if (!t) return { todos: [], error: "no such todo" };
+        t.status = t.status === "completed" ? "pending" : "completed";
+        return { todos: session.todos.map((x) => ({ text: x.content, done: x.status === "completed", active: x.status === "in_progress" })) };
+      },
       loadSession: async (file: string) => {
         const saved = loadSession(file);
         if (!saved) return { ok: false, error: "session not found" };

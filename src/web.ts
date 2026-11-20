@@ -7,6 +7,12 @@ export interface WebApproval {
   resolve: (ok: boolean, all?: boolean) => void;
 }
 
+export interface WebTodo {
+  text: string;
+  done: boolean;
+  active: boolean;
+}
+
 export interface McpServerInfo {
   name: string;
   command?: string;
@@ -49,6 +55,8 @@ export interface WebControl {
   getHistory?(): { role: string; content: string; images?: number }[];
   addImage?(data: string, name: string): Promise<{ ok: boolean; count?: number; error?: string }>;
   compact?(): Promise<{ ok: boolean; before?: number; after?: number; error?: string }>;
+  addTodo?(text: string): { todos: WebTodo[]; error?: string };
+  toggleTodo?(index: number): { todos: WebTodo[]; error?: string };
   listSkills?(): { name: string; scope: string; description: string; chars: number }[];
   saveSkill?(input: { name: string; content: string; scope?: string }): Promise<{ ok: boolean; error?: string }>;
   removeSkill?(name: string): Promise<{ ok: boolean; error?: string }>;
@@ -189,6 +197,15 @@ export function startWebServer(opts: {
       }
       if (req.method === "POST" && url.pathname === "/api/compact" && ctl?.compact) {
         return json(200, await ctl.compact());
+      }
+      if (req.method === "POST" && url.pathname === "/api/todo/add" && ctl?.addTodo) {
+        const { text } = await readBody();
+        if (!text?.trim()) return json(400, { error: "text required" });
+        return json(200, ctl.addTodo(String(text).slice(0, 300)));
+      }
+      if (req.method === "POST" && url.pathname === "/api/todo/toggle" && ctl?.toggleTodo) {
+        const { index } = await readBody();
+        return json(200, ctl.toggleTodo(Number(index)));
       }
       if (req.method === "POST" && url.pathname === "/api/approve") {
         const { id, ok, all } = await readBody();
