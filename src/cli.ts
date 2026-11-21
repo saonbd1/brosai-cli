@@ -637,6 +637,7 @@ async function runTurn(session: Session, prompt: string, opts: CliOpts, extraIma
     systemPrompt: basePrompt + todoContext + loadContextFiles(opts.cwd),
     toolDefs: allDefs,
     maxSteps: opts.maxSteps,
+    contextWindow: opts.contextWindow,
     signal: hooks?.signal,
     ctx: {
       approve: opts.approveFn ?? (opts.yes ? () => true : makeApprover(session.approveState)),

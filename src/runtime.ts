@@ -76,6 +76,7 @@ export async function runRuntimeTurn(session: SessionState, prompt: string, opts
     systemPrompt: basePrompt + todoContext + loadContextFiles(session.cwd),
     toolDefs: allDefs,
     maxSteps: opts.maxSteps ?? 100,
+    contextWindow: opts.contextWindow,
     signal: opts.signal,
     ctx: {
       approve: opts.approve,

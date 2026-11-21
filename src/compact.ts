@@ -1,11 +1,11 @@
 import { chatOnce, type ChatMessage } from "./providers/index.ts";
 import type { ResolvedProvider } from "./secrets.ts";
 
-/** Rough token estimate: ~4 chars per token. */
+/** Rough token estimate: ~3.5 chars per token (code/JSON tokenizes denser than prose). */
 export function estimateTokens(messages: ChatMessage[]): number {
   let chars = 0;
   for (const m of messages) chars += JSON.stringify({ ...m, images: m.images?.length ? `[${m.images.length} image(s)]` : undefined }).length;
-  return Math.ceil(chars / 4);
+  return Math.ceil(chars / 3.5);
 }
 
 const SUMMARIZE_PROMPT = `You are compressing a coding-agent conversation to save context. Summarize the conversation so far, preserving:

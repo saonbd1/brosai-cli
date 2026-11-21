@@ -1,4 +1,5 @@
 import { chatStream, type ChatMessage, type ToolSpec } from "./providers/index.ts";
+import { compactHistory } from "./compact.ts";
 import { runTool, toolSpecs, TOOLS, type ToolContext, type ToolDef, type ToolResult } from "./tools/index.ts";
 import type { ResolvedProvider } from "./secrets.ts";
 
@@ -24,6 +25,8 @@ export interface AgentOptions {
   events?: AgentEvents;
   /** Data-URL images attached to this turn's user message. */
   images?: string[];
+  /** Model context window; enables mid-turn compaction when history grows too large. */
+  contextWindow?: number;
 }
 
 export interface AgentResult {
@@ -64,6 +67,18 @@ export async function runAgent(prompt: string, opts: AgentOptions): Promise<Agen
     const tools = opts.tools ?? defs.map(({ name, description, parameters }) => ({ name, description, parameters }));
     let turnContent = "";
     const toolCalls: { id: string; name: string; arguments: string }[] = [];
+
+    // Mid-turn compaction: one turn can grow history far past the window (100 steps
+    // × tool outputs), and turn-start compaction alone can't catch that. Check before
+    // every model call; compactHistory early-returns cheaply when under budget.
+    if (opts.contextWindow && steps > 1) {
+      const rest = messages.slice(1);
+      const compacted = await compactHistory(opts.provider, rest, Math.floor(opts.contextWindow * 0.8));
+      if (compacted !== rest) {
+        messages.splice(1, messages.length - 1, ...compacted);
+        opts.events?.onText?.("\n\n_(context compacted)_\n\n");
+      }
+    }
 
     try {
       for await (const ev of chatStream(opts.provider, { messages, tools, signal: opts.signal, maxTokens: opts.maxTokens })) {
