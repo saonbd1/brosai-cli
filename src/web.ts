@@ -57,6 +57,7 @@ export interface WebControl {
   compact?(): Promise<{ ok: boolean; before?: number; after?: number; error?: string }>;
   addTodo?(text: string): { todos: WebTodo[]; error?: string };
   toggleTodo?(index: number): { todos: WebTodo[]; error?: string };
+  approveAll?(): void;
   listSkills?(): { name: string; scope: string; description: string; chars: number }[];
   saveSkill?(input: { name: string; content: string; scope?: string }): Promise<{ ok: boolean; error?: string }>;
   removeSkill?(name: string): Promise<{ ok: boolean; error?: string }>;
@@ -206,6 +207,11 @@ export function startWebServer(opts: {
       if (req.method === "POST" && url.pathname === "/api/todo/toggle" && ctl?.toggleTodo) {
         const { index } = await readBody();
         return json(200, ctl.toggleTodo(Number(index)));
+      }
+      if (req.method === "POST" && url.pathname === "/api/approve-all" && ctl?.approveAll) {
+        ctl.approveAll();
+        for (const a of approvals.splice(0)) a.resolve(true);
+        return json(200, { ok: true });
       }
       if (req.method === "POST" && url.pathname === "/api/approve") {
         const { id, ok, all } = await readBody();

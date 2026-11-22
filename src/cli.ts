@@ -1148,7 +1148,8 @@ async function main(): Promise<void> {
     const port = Number(pi >= 0 ? argv[pi + 1] : 0) || Number(process.env.BROS_WEB_PORT) || 8420;
     const { startWebServer, makeWebApprover } = await import("./web.ts");
     const approvals: WebApproval[] = [];
-    opts.approveFn = makeWebApprover(approvals, { all: false }, (cmd) => opts.yes || isReadOnlyCommand(cmd) || isAllowlisted(cmd));
+    const webApproveState = { all: false };
+    opts.approveFn = makeWebApprover(approvals, webApproveState, (cmd) => opts.yes || isReadOnlyCommand(cmd) || isAllowlisted(cmd));
     const control = {
       getState: () => ({
         mode: opts.mode,
@@ -1225,6 +1226,7 @@ async function main(): Promise<void> {
         .filter((m) => m.role === "user" || (m.role === "assistant" && m.content))
         .map((m) => ({ role: m.role, content: m.content ?? "", images: m.images?.length ?? 0 })),
       newSession: () => { session.history = []; session.sessionFile = undefined; session.todos = []; },
+      approveAll: () => { webApproveState.all = true; },
       addTodo: (text: string) => {
         session.todos.push({ content: text.slice(0, 300), status: "pending" });
         return { todos: session.todos.map((t) => ({ text: t.content, done: t.status === "completed", active: t.status === "in_progress" })) };
